@@ -20,8 +20,9 @@ start_link() ->
 
 init([]) ->
 	Procs = [
+    {websocket_rooms_sup,{websocket_rooms_sup, start_link, []}, permanent, infinity, supervisor, []},
     {access_test_db,{access_test, start_link, []}, permanent, 2000, worker, []},
-		{message_router,{router, start_link, []}, permanent, 2000, worker, []}
+		{router_main,{router_main, start_link, []}, permanent, 2000, worker, []}
 %%	{history_writer,{histwriter, start_link, []}, permanent, 2000, worker, []},
   ],
 	{ok, {{one_for_one, 10, 10}, Procs}}.

@@ -1,7 +1,7 @@
 -module(user_tokens).
 -compile(nowarn_unused_function).
 
--export([userLogin/3]).
+-export([userLogin/3, userRefreshTokens/1]).
 
 userLogin(Login,_Pid,Password) ->
   D = authDbOpen(),
@@ -14,6 +14,26 @@ userLogin(Login,_Pid,Password) ->
           NewSession = saveSession(UserStruct, RefreshToken),
           updateDb(NewSession),
           {ok, {AccessToken, RefreshToken}};
+        {error, Reason} ->
+          file:close(IoDev),
+          u:trace("AUTH_FILE_NOT_FOUND", Reason),
+          {error, Reason}
+      end;
+    {error, Reason} ->
+      {error, Reason}
+  end.
+
+userRefreshTokens(RefreshToken) ->
+  D = authDbOpen(),
+  case D of
+    {ok, IoDev} ->
+      case findUserOnDb(RefreshToken, IoDev) of
+        {ok, UserStruct} -> 
+          file:close(IoDev),
+          {_, AccessToken, NewRefreshToken} = genTokens(UserStruct),
+          NewSession = saveSession(UserStruct, NewRefreshToken),
+          updateDb(NewSession),
+          {ok, {AccessToken, NewRefreshToken}};
         {error, Reason} ->
           file:close(IoDev),
           u:trace("AUTH_FILE_NOT_FOUND", Reason),
@@ -36,8 +56,9 @@ genTokens(UserStruct, ExpireSeconds) ->
   UserLogin = maps:get(<<"login">>, maps:get(<<"userdata">>, UserStruct)),
   Payload = [{exp, Utime + ExpireSeconds}, {login, UserLogin}, {name, UserName}],
   Data = base64:encode_to_string(jsone:encode(Header)) ++ "." ++ base64:encode_to_string(jsone:encode(Payload)),
-  Hash = u:md5_hex(lists:concat([Data, Salt])),
-  {ok, Data ++ "." ++ Hash, Refresh}.
+  Hash = list_to_binary(u:md5_hex(Data ++ Salt)),
+  BinData = list_to_binary(Data),
+  {ok, <<BinData/binary, <<".">>/binary, Hash/binary>>, Refresh}.
   
 
 saveSession(UserStruct, RefreshToken) ->
@@ -97,6 +118,33 @@ findUserOnDb(Login, Password, IoDev) ->
           {ok, UserStruct};
         _ -> 
           findUserOnDb(Login, Password, IoDev)
+      end;
+    eof ->
+      {error, notfoundindb}
+  end.
+
+findUserOnDb(RefreshToken, IoDev) ->
+  Line = file:read_line(IoDev),
+  case Line of
+    {ok, Record} ->
+      UserStruct = jsone:decode(string:trim(Record)),
+      Sessions = maps:get(<<"sessions">>, UserStruct),
+      CheckFun = fun(Token) ->
+        TokenValue = maps:get(<<"token">>, Token),
+        TokenExpire = maps:get(<<"expire">>, Token),
+        ((RefreshToken == TokenValue) andalso (TokenExpire>=u:utime(asinteger)))
+      end,
+      Valid = case Sessions of
+        [] -> false;
+        _ -> lists:search(CheckFun, Sessions)
+      end,
+      case Valid of
+        false -> findUserOnDb(RefreshToken, IoDev);
+        {value, _} -> 
+          NewSessions = [ Map || Map <- Sessions, not CheckFun(Map)],
+          NewUserStruct = maps:update(<<"sessions">>, NewSessions, UserStruct),
+          updateDb(NewUserStruct),
+          {ok, NewUserStruct} 
       end;
     eof ->
       {error, notfoundindb}

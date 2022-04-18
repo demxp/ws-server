@@ -110,7 +110,6 @@ ws.onopen = function () {
 	mess.action = "register";
 	mess.userid = "3243";
 	mess.name = "Администратор";
-	mess.room = "sgsgg";
 	wss(mess);
 	ping = true;	
 }
@@ -132,7 +131,7 @@ ws.onclose = function (evt) {
 ws.onmessage = function (e) {
 		var m = $.parseJSON(e.data);
 			switch(m.action){
-				case('newname'):
+				case('register'):
 					$('#msgs').prepend('<p style="color:blue">Здравствуйте, '+m.message+'!</p>');
 					var pass = prompt('Введите пароль администратора');
 					if(pass != null){

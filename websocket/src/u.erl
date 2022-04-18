@@ -1,21 +1,28 @@
 -module(u).
 -compile(nowarn_unused_function).
 
--export([trace/1, trace/2, traceB/1, traceB/2, testadmin/3, md5_hex/1, getSetting/1, utime/0]).
+-export([trace/1, trace/2, traceB/1, traceB/2, testadmin/3, md5_hex/1, getSetting/1, utime/0, utime/1, apply_foo/2]).
 
 trace(X) -> spawn(fun() -> io:format("~p~n",[X]) end).
 traceB(X) -> spawn(fun() -> io:format("~s~n",[X]) end).
 trace(X,Y) -> spawn(fun() -> io:format("~s: ~p~n",[X,Y]) end).
 traceB(X,Y) -> spawn(fun() -> io:format("~s: ~s~n",[X,Y]) end).
 
+apply_foo(Foo, Thingy) -> Foo(Thingy).
+
 parseTuple(String) ->
   {ok, Ts, _} = erl_scan:string(String),
   {ok, Tup} = erl_parse:parse_term(Ts),
   {ok, Tup}.
 
-utime()->
+utime() ->
+  utime(asbinary).
+utime(asbinary)->
   {MegaSecs, MilliSecs, _Microsecs} = erlang:timestamp(),
-  integer_to_binary(MegaSecs * 1000000 + MilliSecs).
+  integer_to_binary(MegaSecs * 1000000 + MilliSecs);
+utime(asinteger)->
+  {MegaSecs, MilliSecs, _Microsecs} = erlang:timestamp(),
+  MegaSecs * 1000000 + MilliSecs.
 
 getSetting(Key) ->
   D = file:consult("./sett.dat"),

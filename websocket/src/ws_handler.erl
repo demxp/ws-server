@@ -5,7 +5,7 @@
 -export([websocket_info/2]).
 -export([websocket_terminate/3]).
 
--record(user,{servid=0, id="0", name="user", ip, status="ordinar", registered="none", token="none", room="all", ping_timer}).
+-record(user,{servid=0, id="0", name="user", ip, status="ordinar", registered="none", token="none", room, room_pid, ping_timer}).
 
 init(Req, _Opts) ->
 	{IpAddress, _} = cowboy_req:peer(Req),
@@ -44,9 +44,9 @@ websocket_info({sreply, Msg}, State) ->
 	{[{text, Msg}], State};	
 websocket_info({disconn, Msg}, State) ->
 	exit(self(), normal),
-	{[{text, Msg}], State};		
+	{[{text, Msg}], State};
 websocket_info(do_ping, State) ->
-    {[{ping, <<>>}], State};	
+  {[{ping, <<>>}], State};	
 websocket_info(_Info, State) ->
 	{[], State}.
 
@@ -63,63 +63,45 @@ schedule_ping(State, Interval) ->
 analize({Data}, State, Userip) ->
 	case catch binary_to_list(proplists:get_value(action, Data, <<"ERROR">>)) of
 		"register" ->
-			Usname = proplists:get_value(name, Data),
-			Usid = proplists:get_value(userid, Data),
-			Usroom = proplists:get_value(room, Data),
-			case Usroom of
-				<<>> ->
-					Usroom1 = <<"all">>,
-					{Regstat, Usernum} = router:login(Usid, self(), Usname, Usroom1, Userip),
-					case Regstat of
-						'normal' ->
-							Dtsend = {sreply, jsone:encode([{action, newname},{user, system},{message, Usname}])},
-							self() ! Dtsend,
-							#user{servid=Usernum, id=Usid, name=Usname, ip=Userip, registered="yes", room=Usroom1};
-						'banned' ->
-							Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, youbanned}])},
-							self() ! Dtsend,
-							self() ! {disconn, ""}
-					end;
-				undefined ->
-					Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, errorenterroom}])},
+			Usname = proplists:get_value(name, Data, <<"Anonymous">>),
+			Usid = proplists:get_value(userid, Data, 0),
+			Usroom = proplists:get_value(room, Data, <<"All">>),
+			{Stat, RoomPid} = router_main:get_room(Usroom),
+			case Stat of
+				error ->
+					Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, roomnotfound}])},
 					self() ! Dtsend,
-					State;
-				_ ->
-					{Regstat, Usernum} = router:login(Usid, self(), Usname, Usroom, Userip),
+					exit(self(), normal);
+				ok -> 
+					{Regstat, Usernum} = room_router:login(RoomPid, {self(), Userip}),
 					case Regstat of
 						'normal' ->
-							Dtsend = {sreply, jsone:encode([{action, newname},{user, system},{message, Usname}])},
-							self() ! Dtsend,
-							#user{servid=Usernum, id=Usid, name=Usname, ip=Userip, registered="yes", room=Usroom};
+							self() ! {sreply, jsone:encode([{action, register},{user, system},{message, Usname}])},
+							#user{servid=Usernum, id=Usid, name=Usname, ip=Userip, registered="yes", room=Usroom, room_pid=RoomPid};
 						'banned' ->
-							Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, youbanned}])},
-							self() ! Dtsend,
-							self() ! {disconn, ""}
+							self() ! {disconn, jsone:encode([{action, systemsay},{user, system},{message, youbanned}])}
 					end
 			end;
 		"say" ->
 			case State#user.registered of
 				"none" ->
-					Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, errornotregistered}])},
-					self() ! Dtsend;
+					self() ! {sreply, jsone:encode([{action, systemsay},{user, system},{message, errornotregistered}])};
 				"yes" ->
-					Dtsend = {sreply, jsone:encode([{action, say},{num, State#user.servid},{id, State#user.id},{name, State#user.name},{message, proplists:get_value(<<"message">>, Data)}])},
-					router:send(Dtsend, State#user.room, State#user.name, State#user.servid)
+					Dtsend = {sreply, jsone:encode([{action, say},{num, State#user.servid},{id, State#user.id},{name, State#user.name},{message, proplists:get_value(message, Data)}])},
+					room_router:send(State#user.room_pid, {Dtsend, State#user.name, State#user.servid})
 			end,
 			State;
 		"ping" ->
-			Dtsend = {sreply, jsone:encode([{action, check},{user, system},{message, pong}])},
+			Dtsend = {sreply, jsone:encode([{action, ping},{user, system},{message, pong}])},
 			self() ! Dtsend,		
 			State;			
 		"admregister" ->
 			Login = proplists:get_value(login, Data),
 			Password = proplists:get_value(password, Data),
-			Tokens = user_tokens:userLogin(Login, self(), Password),
-
-			case Tokens of
-				{ok, {Access, _Refresh}} -> 
-					%router:setadm(State#user.servid),
-					Dtsend = {sreply, jsone:encode([{action, compladmin},{user, system},{message, completeadminregister},{token, list_to_binary(Access)}])},
+			case user_tokens:userLogin(Login, self(), Password) of
+				{ok, {Access, Refresh}} -> 
+					room_router:setadm(State#user.room_pid, State#user.servid),
+					Dtsend = {sreply, jsone:encode([{action, admregister},{user, system},{message, completeadminregister},{token, Access},{refresh, Refresh}])},
 					self() ! Dtsend,
 					State#user{status="admin", token=Access};
 				{error, _} -> 
@@ -127,114 +109,124 @@ analize({Data}, State, Userip) ->
 					self() ! Dtsend,				
 					State
 			end;
-
-		"admsay" ->
-			Token = proplists:get_value(<<"token">>, Data),
-			case admaccess(Token, State) of
-				{ok, _} ->
-					Dtsend = {sreply, jsone:encode([{action, admsay},{num, State#user.servid},{user, system},{message, proplists:get_value(<<"message">>, Data)}])},
-					router:send(Dtsend, State#user.room, State#user.name, State#user.servid),
-					State;
-				{error, _} ->
+		"admrefresh" ->
+			RefreshToken = proplists:get_value(refresh, Data),
+			case user_tokens:userRefreshTokens(RefreshToken) of
+				{ok, {Access, Refresh}} -> 
+					Dtsend = {sreply, jsone:encode([{action, admrefresh},{user, system},{message, completerefreshtokens},{token, Access},{refresh, Refresh}])},
+					self() ! Dtsend;
+				{error, _} -> 
+					Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, errorrefreshtokens}])},
+					self() ! Dtsend,				
 					State
 			end;
-		"admoperations" ->
-			Token = proplists:get_value(<<"token">>, Data),
-			case admaccess(Token, State) of
-				{ok, _} ->
-					Dtsend = {sreply, jsone:encode([{action, operation},{num, State#user.servid},{user, system},{message, proplists:get_value(<<"message">>, Data)}])},
-					router:send(Dtsend, State#user.room, State#user.name, State#user.servid),
-					State;
-				{error, _} ->
-					State
-			end;
-		"getadmlist" ->
-			Token = proplists:get_value(<<"token">>, Data),
-			case admaccess(Token, State) of
-				{ok, _} ->
-					router:admlst(self()),
-					State;
-				{error, _} ->
-					State
-			end;
-		"getroomsett" ->
-			Token = proplists:get_value(<<"token">>, Data),
-			case admaccess(Token, State) of
-				{ok, _} ->
-					Curr = router:gs(),
-					Formatted = [[{room, Room},{params,[Par1,Par2,Par3,Par4]}]||{Room,{_,Par1,Par2,Par3,Par4}} <- Curr],
-					Dtsend = {sreply, jsone:encode([{action, settings},{user, system},{message, Formatted}])},
-					self() ! Dtsend,
-					State;
-				{error, _} ->
-					State
-			end;
-		"setroomsett" ->
-			Token = proplists:get_value(<<"token">>, Data),
-			case admaccess(Token, State) of
-				{ok, _} ->
-					Room = proplists:get_value(<<"room">>, Data),
-					Param = proplists:get_value(<<"param">>, Data),
-					Command = proplists:get_value(<<"comm">>, Data),
-					case Param of
-						<<"hsend">> ->
-							router:ss(Room,{binary_to_atom(Param, latin1), binary_to_atom(Command, latin1)});
-						<<"log">> ->
-							router:ss(Room,{binary_to_atom(Param, latin1), binary_to_atom(Command, latin1)});						
-						<<"ustat">> ->
-							router:ss(Room,{binary_to_atom(Param, latin1), binary_to_atom(Command, latin1)});						
-						<<"lssend">> ->
-							router:ss(Room,{binary_to_atom(Param, latin1), binary_to_atom(Command, latin1)});						
-						_ ->
-							ok
-					end,
-					Curr = router:gs(),
-					Formatted = [[{room, Croom},{params,[Par1,Par2,Par3,Par4]}]||{Croom,{_,Par1,Par2,Par3,Par4}} <- Curr],
-					Dtsend = {sreply, jsone:encode([{action, settings},{user, system},{message, Formatted}])},
-					self() ! Dtsend,
-					State;
-				{error, _} ->
-					State
-			end;			
-		"getbanlist" ->
-			Token = proplists:get_value(<<"token">>, Data),
-			case admaccess(Token, State) of
-				{ok, _} ->
-					router:banlst(self()),
-					State;
-				{error, _} ->
-					State
-			end;	
-		"admkick" ->
-			Token = proplists:get_value(<<"token">>, Data),
-			case admaccess(Token, State) of
-				{ok, _} ->
-					Usernum = proplists:get_value(<<"user">>, Data),
-					router:kick(Usernum),
-					State;
-				{error, _} ->
-					State
-			end;	
-		"admuserban" ->
-			Token = proplists:get_value(<<"token">>, Data),
-			case admaccess(Token, State) of
-				{ok, _} ->
-					Usernum = proplists:get_value(<<"user">>, Data),
-					router:userban(Usernum),
-					State;
-				{error, _} ->
-					State
-			end;			
-		"admunban" ->
-			Token = proplists:get_value(<<"token">>, Data),
-			case admaccess(Token, State) of
-				{ok, _} ->
-					Usernum = proplists:get_value(<<"ipnumber">>, Data),
-					router:unban(Usernum),
-					State;
-				{error, _} ->
-					State
-			end;			
+		% "admsay" ->
+		% 	Token = proplists:get_value(<<"token">>, Data),
+		% 	case admaccess(Token, State) of
+		% 		{ok, _} ->
+		% 			Dtsend = {sreply, jsone:encode([{action, admsay},{num, State#user.servid},{user, system},{message, proplists:get_value(<<"message">>, Data)}])},
+		% 			room_router:send(Dtsend, State#user.room, State#user.name, State#user.servid),
+		% 			State;
+		% 		{error, _} ->
+		% 			State
+		% 	end;
+		% "admoperations" ->
+		% 	Token = proplists:get_value(<<"token">>, Data),
+		% 	case admaccess(Token, State) of
+		% 		{ok, _} ->
+		% 			Dtsend = {sreply, jsone:encode([{action, operation},{num, State#user.servid},{user, system},{message, proplists:get_value(<<"message">>, Data)}])},
+		% 			room_router:send(Dtsend, State#user.room, State#user.name, State#user.servid),
+		% 			State;
+		% 		{error, _} ->
+		% 			State
+		% 	end;
+		% "getadmlist" ->
+		% 	Token = proplists:get_value(<<"token">>, Data),
+		% 	case admaccess(Token, State) of
+		% 		{ok, _} ->
+		% 			room_router:admlst(self()),
+		% 			State;
+		% 		{error, _} ->
+		% 			State
+		% 	end;
+		% "getroomsett" ->
+		% 	Token = proplists:get_value(<<"token">>, Data),
+		% 	case admaccess(Token, State) of
+		% 		{ok, _} ->
+		% 			Curr = room_router:gs(),
+		% 			Formatted = [[{room, Room},{params,[Par1,Par2,Par3,Par4]}]||{Room,{_,Par1,Par2,Par3,Par4}} <- Curr],
+		% 			Dtsend = {sreply, jsone:encode([{action, settings},{user, system},{message, Formatted}])},
+		% 			self() ! Dtsend,
+		% 			State;
+		% 		{error, _} ->
+		% 			State
+		% 	end;
+		% "setroomsett" ->
+		% 	Token = proplists:get_value(<<"token">>, Data),
+		% 	case admaccess(Token, State) of
+		% 		{ok, _} ->
+		% 			Room = proplists:get_value(<<"room">>, Data),
+		% 			Param = proplists:get_value(<<"param">>, Data),
+		% 			Command = proplists:get_value(<<"comm">>, Data),
+		% 			case Param of
+		% 				<<"hsend">> ->
+		% 					room_router:ss(Room,{binary_to_atom(Param, latin1), binary_to_atom(Command, latin1)});
+		% 				<<"log">> ->
+		% 					room_router:ss(Room,{binary_to_atom(Param, latin1), binary_to_atom(Command, latin1)});						
+		% 				<<"ustat">> ->
+		% 					room_router:ss(Room,{binary_to_atom(Param, latin1), binary_to_atom(Command, latin1)});						
+		% 				<<"lssend">> ->
+		% 					room_router:ss(Room,{binary_to_atom(Param, latin1), binary_to_atom(Command, latin1)});						
+		% 				_ ->
+		% 					ok
+		% 			end,
+		% 			Curr = room_router:gs(),
+		% 			Formatted = [[{room, Croom},{params,[Par1,Par2,Par3,Par4]}]||{Croom,{_,Par1,Par2,Par3,Par4}} <- Curr],
+		% 			Dtsend = {sreply, jsone:encode([{action, settings},{user, system},{message, Formatted}])},
+		% 			self() ! Dtsend,
+		% 			State;
+		% 		{error, _} ->
+		% 			State
+		% 	end;			
+		% "getbanlist" ->
+		% 	Token = proplists:get_value(<<"token">>, Data),
+		% 	case admaccess(Token, State) of
+		% 		{ok, _} ->
+		% 			room_router:banlst(self()),
+		% 			State;
+		% 		{error, _} ->
+		% 			State
+		% 	end;	
+		% "admkick" ->
+		% 	Token = proplists:get_value(<<"token">>, Data),
+		% 	case admaccess(Token, State) of
+		% 		{ok, _} ->
+		% 			Usernum = proplists:get_value(<<"user">>, Data),
+		% 			room_router:kick(Usernum),
+		% 			State;
+		% 		{error, _} ->
+		% 			State
+		% 	end;	
+		% "admuserban" ->
+		% 	Token = proplists:get_value(<<"token">>, Data),
+		% 	case admaccess(Token, State) of
+		% 		{ok, _} ->
+		% 			Usernum = proplists:get_value(<<"user">>, Data),
+		% 			room_router:userban(Usernum),
+		% 			State;
+		% 		{error, _} ->
+		% 			State
+		% 	end;			
+		% "admunban" ->
+		% 	Token = proplists:get_value(<<"token">>, Data),
+		% 	case admaccess(Token, State) of
+		% 		{ok, _} ->
+		% 			Usernum = proplists:get_value(<<"ipnumber">>, Data),
+		% 			room_router:unban(Usernum),
+		% 			State;
+		% 		{error, _} ->
+		% 			State
+		% 	end;			
 		{'EXIT',_} -> 
 			u:trace('ERROR IN JSON 2'),
 			State;
@@ -243,18 +235,18 @@ analize({Data}, State, Userip) ->
 			State
 	end.
 	
-admaccess(Token, State) when State#user.status =:= "admin" ->
-	SavedToken = list_to_binary(State#user.token),
-	case SavedToken of
-		Token ->
-			{ok, State};
-		_ ->
-			Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, erroradminregister}])},
-			self() ! Dtsend,				
-			{error, State}
-	end;
-admaccess(_Token, State) ->
-	Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, erroradminregister}])},
-	self() ! Dtsend,				
-	{error, State}.
+% admaccess(Token, State) when State#user.status =:= "admin" ->
+% 	SavedToken = list_to_binary(State#user.token),
+% 	case SavedToken of
+% 		Token ->
+% 			{ok, State};
+% 		_ ->
+% 			Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, erroradminregister}])},
+% 			self() ! Dtsend,				
+% 			{error, State}
+% 	end;
+% admaccess(_Token, State) ->
+% 	Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, erroradminregister}])},
+% 	self() ! Dtsend,				
+% 	{error, State}.
 			
