@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="">
+    <meta name="author" content="">
+
+    <title>Сервер чата</title>
+
+    <!-- Bootstrap core CSS -->
+    <link href="static/css/bootstrap.min.css" rel="stylesheet">
+
+    <link href="static/css/style.css" rel="stylesheet">   
+
+	<style type="text/css" title="currentStyle">
+		@import "static/css/demo_page.css";
+		@import "static/css/demo_table.css";
+	</style>
+	<link type="text/css" href="static/css/klnd.css" rel="Stylesheet" />
+
+    <script src="static/js/jquery.js"></script>   	
+	<script type="text/javascript" language="javascript" src="static/js/jquery.dataTables.js"></script>
+	<script type="text/javascript" src="static/js/klnd.js"></script>	
+    <script src="static/js/jquery.cookie.js"></script>      
+    <script src="static/js/jsurl.min.js"></script>
+    
+    <!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+    <!--[if lt IE 9]>
+      <script src="https://oss.maxcdn.com/html5shiv/3.7.2/html5shiv.min.js"></script>
+      <script src="https://oss.maxcdn.com/respond/1.4.2/respond.min.js"></script>
+    <![endif]-->
+</head>
+
+  <body>
+
+<script type="text/javascript" charset="utf-8">
+    var ws;
+	var tbl;	
+	var admpass = 0;
+	var admpassorig = 0;
+	var ping = false;
+    if (!window.WebSocket) {
+      alert("WebSocket not supported by this browser");
+    };
+
+function sendmss(){
+	$('.sendmess').click();
+}	
+	
+$(function() {
+$('#tbl').html( '<table cellpadding="0" cellspacing="0" border="0" class="hover" id="example"></table>' );
+	var tbl = $('#example').dataTable({
+		searching:false,
+		"oLanguage": {
+			"sUrl": "static/js/ru_RU.txt"
+		},
+		"columns": [
+	   { "title": "Серверный ID" },
+	   { "title": "IP адрес" },
+	   { "title": "Пользователь" },
+	   { "title": "Комната" },
+	   { "title": "Статус" },
+	   { "title": "Активность" },
+	   { "title": "Операции" }   
+		],
+		"columnDefs": [{
+			"targets": -1,
+			"data": null,
+			"defaultContent": "<button data-mode=\"uban\">BAN!</button>&nbsp;<button data-mode=\"ukick\">KICK!</button>"
+		}],	
+	   "createdRow": function ( row, data, index ) {
+		   if ( data[5] == 'admin' ) {
+			   $(row).addClass('gradeA');
+		   }else{
+			   $(row).addClass('gradeB');
+		   }
+	   }
+	});
+$('#tbl1').html( '<table cellpadding="0" cellspacing="0" border="0" class="hover" id="example1"></table>' );
+	var tbl1 = $('#example1').dataTable({
+		searching:false,
+		"oLanguage": {
+			"sUrl": "static/js/ru_RU.txt"
+		},
+		"columns": [
+	   { "title": "Серверный ID" },
+	   { "title": "IP адрес" },
+	   { "title": "Операции" }   
+		],
+		"columnDefs": [{
+			"targets": -1,
+			"data": null,
+			"defaultContent": "<button data-mode=\"uunban\">UNBAN!</button>"
+		}],	
+	   "createdRow": function ( row, data, index ) {
+		   if ( data[5] == 'admin' ) {
+			   $(row).addClass('gradeA');
+		   }else{
+			   $(row).addClass('gradeB');
+		   }
+	   }
+	});
+
+ws = new WebSocket("ws://"+window.location.host+"/websocket");
+ws.onopen = function () {
+	$('#connstate').text('ПОДКЛЮЧЕНО').css('color','green');
+	var mess = {};
+	mess.action = "register";
+	mess.userid = "3243";
+	mess.name = "Администратор";
+	mess.room = "sgsgg";
+	wss(mess);
+	ping = true;	
+}
+ws.onclose = function (evt) {
+	$('#connstate').text('ОТКЛЮЧЕНО').css('color','red');
+	ping = false;
+}
+//   // Initialize the agent at application startup.
+//   const fpPromise = import('https://openfpcdn.io/fingerprintjs/v3')
+//     .then(FingerprintJS => FingerprintJS.load())
+
+//   // Get the visitor identifier when you need it.
+//   fpPromise
+//     .then(fp => fp.get())
+//     .then(result => {
+//       window.visitorId = result.visitorId
+//       console.log(visitorId)
+//   })						
+ws.onmessage = function (e) {
+		var m = $.parseJSON(e.data);
+			switch(m.action){
+				case('newname'):
+					$('#msgs').prepend('<p style="color:blue">Здравствуйте, '+m.message+'!</p>');
+					var pass = prompt('Введите пароль администратора');
+					if(pass != null){
+						var mess = {};
+						mess.action = "admregister";
+						mess.login = "admin";
+						mess.password = pass;
+						mess.fingerprint = "9df7488d6498eccda9e0c40628738c53";
+						wss(mess);
+						admpassorig = pass;
+					}else{
+					$('#msgs').prepend('<p style="color:red">РЕЖИМ ПОЛЬЗОВАТЕЛЯ!</p>');					
+					}
+				break;
+				case('say'):
+					$('#msgs').prepend('<p style="color:green">'+m.name+': <span style="color:#000">'+m.message+'</span></p>');
+				break;
+				case('history'):
+				$.each(m.message, function(k,v){
+					$('#msgs').prepend('<p style="color:green">'+v.name+': <span style="color:#000">'+v.message+'</span></p>');
+				})
+				console.log(m.message);
+				break;
+				case('admsay'):
+					$('#msgs').prepend('<p style="color:red">Администратор: <span style="color:#000">'+m.message+'</span></p>');
+				break;				
+				case('admlist'):
+					users(m.message);
+				break;				
+				case('admbaniplst'):
+					banlst(m.message);
+				break;								
+				case('list'):
+					$.each(m.message, function(k,val){
+						$('#msgs').prepend('<p style="color:green">'+val.id+' - '+val.name+'</p>');
+					})
+					$('#msgs').prepend('<p style="color:red">Система: <span style="color:#000">пользователи онлайн:</span></p>');					
+				break;
+				case('systemsay'):
+				switch(m.message){
+					case('errornotregistered'):
+					$('#msgs').prepend('<p style="color:red">Система: <span style="color:#000">Вы не зарегистрированы!</span></p>');
+					break;
+					case('erroradminregister'):
+					$('#msgs').prepend('<p style="color:red">Система: <span style="color:#000">Ошибка регистрации администратора чата!</span></p>');
+					break;
+					case('youkicked'):
+					$('#msgs').prepend('<p style="color:red">Система: <span style="color:#000">Вы отключены от сервера!</span></p>');
+					break;					
+					default:
+					$('#msgs').prepend('<p style="color:red">Система: <span style="color:#000"> онлайн-счетчик: '+m.count+'</span></p><p>'+users(m.userlist)+'</p>');
+					break;
+				}
+				break;
+				case('compladmin'):
+					$('#msgs').prepend('<p style="color:green">УСПЕШНАЯ АВТОРИЗАЦИЯ</p>');
+					admpass = m.token;
+					var pagestat = {};
+					pagestat.action = "getadmlist";
+					pagestat.token = admpass;
+					wss(pagestat);				
+				break;
+				case('check'):
+					console.log('check'+m.message);
+				break;
+				case('settings'):
+					parsesett(m.message);
+				break;
+				default:
+				$('#msgs').prepend('<p style="color:red">Система: <span style="color:#000">'+m.message+'</span></p>');
+				break;
+			}
+}
+
+    $('.sendmess').click(function () {
+      var p = $('input[name=message]');
+	  if(p.val().length > 1){
+		var mess = {};
+			if(admpass != 0){
+				mess.action = "admsay";
+				mess.token = admpass;
+			}else{
+				mess.action = "say";
+			}
+		mess.message = p.val();
+		wss(mess);
+		p.val('');
+	  }else{
+		alert("Короткое сообщение");
+	  }
+      return false;
+    })
+    $('#btnList').click(function() {
+	if(admpass != 0){
+		var pagestat = {};
+		pagestat.action = "getadmlist";
+		pagestat.token = admpass;
+		wss(pagestat);
+	}
+	return false;
+    });
+    $('#btnSett').click(function() {
+	if(admpass != 0){
+		var pagestat = {};
+		pagestat.action = "getroomsett";
+		pagestat.token = admpass;
+		wss(pagestat);
+		$('.contdiv').hide();
+		$('#settings').show();			
+	}
+	return false;
+    });	
+    $('#btnLogs').click(function() {
+	if(admpass != 0){
+		$('.contdiv').hide();
+		$('#logs').show();		
+		var srcstr = "http://"+window.location.host+"/getlog/"+admpassorig+"/listlogs/";
+		$('#logs iframe').attr('src',srcstr);
+	}
+	return false;
+    });	
+    $('#btnBanlst').click(function() {
+	if(admpass != 0){
+		var pagestat = {};
+		pagestat.action = "getbanlist";
+		pagestat.token = admpass;
+		wss(pagestat);
+	}
+	return false;
+    });
+    $('body').on('click', 'button', function () {
+	var rw = $(this).closest('tr').find('td').first().text();
+	var mode = $(this).data('mode');
+		switch(mode){
+			case('uban'):
+			if(confirm("Заблокировать этого пользователя по IP адресу?")){
+				var pagestat = {};
+				pagestat.action = "admuserban";
+				pagestat.token = admpass;
+				pagestat.user = rw;		
+				wss(pagestat);
+				setTimeout(function () {
+				pagestat.action = "getadmlist";
+				pagestat.token = admpass;
+				wss(pagestat);				
+				}, 200);								
+			}
+			break;
+			case('uunban'):
+				var pagestat = {};
+				pagestat.action = "admunban";
+				pagestat.token = admpass;
+				pagestat.ipnumber = rw;		
+				wss(pagestat);
+				setTimeout(function () {
+				pagestat.action = "getbanlist";
+				pagestat.token = admpass;
+				wss(pagestat);				
+				}, 200);								
+			break;			
+			case('ukick'):
+			if(confirm("Отключить от сервера?")){
+				var pagestat = {};
+				pagestat.action = "admkick";
+				pagestat.token = admpass;
+				pagestat.user = rw;		
+				wss(pagestat);
+				setTimeout(function () {
+				pagestat.action = "getadmlist";
+				pagestat.token = admpass;
+				wss(pagestat);				
+				}, 200);				
+			}
+			break;	
+			case('settupd'):
+				var csett = $(this).attr('rel').split(':');
+				var txt = '';
+				var param;
+				switch(csett[1]){
+					case('log'):
+						txt = 'запись истории сообщений';
+					break;
+					case('hsend'):
+						txt = 'рассылку истории сообщений';
+					break;
+					case('ustat'):
+						txt = 'рассылку статусов';
+					break;
+					case('lssend'):
+						txt = 'рассылку списков онлайна';
+					break;				
+				}
+				if(csett[2] == 1){
+					txt = "Выключить " + txt + " для этой комнаты?";
+					param = 'd';
+				}else{
+					txt = "Включить " + txt + " для этой комнаты?";				
+					param = 'e';				
+				}
+				if(confirm(txt)){
+					var pagestat = {};
+					pagestat.action = "setroomsett";
+					pagestat.room = csett[0];
+					pagestat.param = csett[1];
+					pagestat.comm = param;
+					pagestat.token = admpass;
+					pagestat.user = rw;		
+					wss(pagestat);
+				}
+			break;				
+		}
+    });	
+function users1(list){
+	var str = '';
+	var arr = {};
+	$.each(list, function(key, val){
+		if(val.room in arr){
+			arr[val.room].push(val.snum +' - '+ val.id + ' - ' + val.name);
+		}else{
+			arr[val.room] = [];
+			arr[val.room].push(val.snum +' - '+ val.id + ' - ' + val.name);			
+		}
+	})
+	$.each(arr, function(rnkey, rnval){
+		str += '<span style="color:black">' + rnkey + '</span><br />';
+		$.each(rnval, function(k, usr){
+			str += '<span style="color:green">' + usr + '</span><br />';
+		})
+		str += '<br />';
+	})
+	return str
+}
+
+function users(list){
+	$('.contdiv').hide();
+	$('#tbl').show();
+	tbl.api().clear();
+	$.each(list, function(key, val){
+		var tdata = [val.snum, val.userip, val.name, val.room, val.status, parseDate(val.lact), "<a href='#' class='userban'>"];
+		tbl.api().row.add(tdata);
+	})
+	tbl.api().draw();	
+}
+
+function parsesett(data){
+	var str = '';
+	var stats = ['danger', 'success'];
+	$.each(data, function(k, v){
+		str += '<tr><td>'+v.room+'</td><td>';	
+		str += '<button type="button" class="btn btn-'+stats[v.params[0]]+'" data-mode="settupd" rel="'+v.room+':log:'+v.params[0]+'">ЛОГИРОВАНИЕ</button>&nbsp';
+		str += '<button type="button" class="btn btn-'+stats[v.params[1]]+'" data-mode="settupd" rel="'+v.room+':hsend:'+v.params[1]+'">РАССЫЛКА ИСТОРИИ</button>&nbsp';
+		str += '<button type="button" class="btn btn-'+stats[v.params[2]]+'" data-mode="settupd" rel="'+v.room+':ustat:'+v.params[2]+'">РАССЫЛКА СТАТУСОВ</button>&nbsp';
+		str += '<button type="button" class="btn btn-'+stats[v.params[3]]+'" data-mode="settupd" rel="'+v.room+':lssend:'+v.params[3]+'">РАССЫЛКА СПИСКОВ</button>&nbsp';		
+		str += '</td></tr>';
+		$('#settings tbody').html(str);
+	})
+}
+
+function banlst(list){
+	$('.contdiv').hide();
+	$('#tbl1').show();
+	tbl1.api().clear();
+	$.each(list, function(key, val){
+		var tdata = [val.snum, val.userip, val.name, val.room, val.status, parseDate(val.lact), "<a href='#' class='userban'>"];
+		tbl1.api().row.add(tdata);
+	})
+	tbl1.api().draw();	
+}
+
+function wss (data){
+	ws.send(JSON.stringify(data));
+}
+
+function parseDate(date) {
+    dateObj = new Date((date-0)*1000);
+    return addnull(dateObj.getHours()) + ':' + addnull(dateObj.getMinutes()) + ' ' + addnull(dateObj.getDate()) + '.' + addnull(dateObj.getMonth() + 1) + '.' + dateObj.getFullYear();
+}
+
+function addnull(int){
+	if(int <= 9){
+		return '0'+int;
+	}else{
+		return int;
+	}
+}
+
+setInterval(function(){
+	if(ping){
+		var mess = {};
+		mess.action = "ping";
+		wss(mess);
+	}
+},20000);
+
+})
+</script>
+    <div class="container">
+      <div class="row">
+       <div class="col-md-12"><br />
+			<div class="chat_blk">
+				<form id="SendForm" style="margin-bottom:3px;">
+					<input class="input-sm" name="message" placeholder="Ваше сообщение" style="width:89%;" onkeydown="if(event.keyCode==13){sendmss();return false;}" />&nbsp;<button type="button" class="btn btn-sm btn-default sendmess" style="font-size:12px;border:0 !important; width:10%">ОТПРАВИТЬ</button><br />
+				</form>
+				<div id="msgs" style="padding:4px;width:100%; height:150px; overflow:auto;border:1px #CC0000 solid;"></div>
+			</div><br />
+			<center><button type="button" id="btnList" class="btn btn-sm btn-default" style="font-size:12px;border:0 !important; width:10%">ЛЮДИ</button>
+			&nbsp;<button type="button" id="btnBanlst" class="btn btn-sm btn-default" style="font-size:12px;border:0 !important; width:10%">БАНЫ</button>
+			&nbsp;<button type="button" id="btnSett" class="btn btn-sm btn-default" style="font-size:12px;border:0 !important; width:10%">НАСТРОЙКИ</button>			
+			&nbsp;<button type="button" id="btnLogs" class="btn btn-sm btn-default" style="font-size:12px;border:0 !important; width:10%">ЛОГИ</button></center>
+			<div class="contdiv" id="tbl" style="display:none"></div><br />			
+			<div class="contdiv" id="tbl1" style="display:none"></div><br />
+			<div class="contdiv" id="logs" style="display:none"><iframe src="" height="250" width="100%"></iframe></div><br />			
+			<div class="contdiv" id="settings" style="display:none">
+			<table class="table table-striped">
+				<thead>
+					<tr>
+						<th style="text-align:center" width="40%"></th>
+						<th style="text-align:center"></th>
+					</tr>
+				</thead>
+				<tbody>
+				</tbody>
+			</table>
+			</div><br />						
+       </div>
+      </div>
+    </div>
+    </div> <!-- /container -->
+
+
+    <!-- Bootstrap core JavaScript
+    ================================================== -->
+    <!-- Placed at the end of the document so the pages load faster -->
+    <script src="static/js/bootstrap.min.js"></script>
+  </body>
+</html>

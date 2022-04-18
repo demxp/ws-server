@@ -1,0 +1,29 @@
+version: '3.2'
+
+networks:
+  backend-network:
+    driver: bridge
+
+volumes:
+  home-dir:
+
+services:
+  &app-service app: &app-service-template
+    build:
+      context: ./docker/erlang-otp
+      dockerfile: Dockerfile
+    user: "${USER_ID:-1000}:${GROUP_ID:-1000}"
+    volumes:
+    - /etc/passwd:/etc/passwd:ro
+    - /etc/group:/etc/group:ro
+    - ./:/app:rw
+    - home-dir:/home/user
+    hostname: *app-service
+    ports: ['1881:1881']
+    environment:
+      APP_ENV: local
+      APP_DEBUG: 'true'
+      HOME: /home/user
+    command: keep-alive.sh
+    networks:
+    - backend-network
