@@ -1,5 +1,6 @@
 -module(u).
 -compile(nowarn_unused_function).
+%-compile(nowarn_unused_vars).
 
 -export([
   trace/1,
@@ -60,7 +61,6 @@ getSetting(Key) ->
       {error}
   end.
 
-% readSettings() ->
   % code:add_pathz("/app/websocket/deps/jsone/ebin").
   % {ok, Data} = file:read_file("./sett.dat").
   % D = jsone:decode(Data, [{object_format, proplist}]).
@@ -122,6 +122,9 @@ testadmin(check,Key,Pid) ->
 			{error}
 	end.
 
+md5_hex(S) when is_list(S) ->
+  S1 = list_to_binary(S),
+  md5_hex(S1);
 md5_hex(S) ->
     Md5_bin =  erlang:md5(S),
     Md5_list = binary_to_list(Md5_bin),

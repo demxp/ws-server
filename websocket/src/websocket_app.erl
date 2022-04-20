@@ -5,9 +5,14 @@
 -behaviour(application).
 
 %% API.
--export([start/2]).
--export([stop/1]).
--export([custom_404_hook/4, get_env/1]).
+-export([
+  start/2,
+  stop/1,
+  custom_404_hook/4,
+  get_env/1,
+  get_env/2
+]).
+
 
 %% API.
 start(_Type, _Args) ->
@@ -76,6 +81,11 @@ load_config(File) ->
   lists:map(SaveParam, ConfigList),
   {ok, loaded}.
 
+get_env(Key, Default) ->
+    case ets:lookup(settings_tab, {env, Key}) of
+  [{_, Val}] -> {ok, Val};
+  _ -> {ok, Default}
+    end.
 get_env(Key) ->
     case ets:lookup(settings_tab, {env, Key}) of
   [{_, Val}] -> {ok, Val};

@@ -19,7 +19,7 @@ services:
     - ./:/app:rw
     - home-dir:/home/user
     hostname: *app-service
-    ports: ['1881:1881']
+    ports: ['81:1881']
     environment:
       APP_ENV: local
       APP_DEBUG: 'true'

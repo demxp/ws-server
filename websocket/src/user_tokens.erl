@@ -1,7 +1,12 @@
 -module(user_tokens).
 -compile(nowarn_unused_function).
 
--export([userLogin/3, userRefreshTokens/1]).
+-export([
+  userLogin/3,
+  userRefreshTokens/1,
+  userCheckAccess/1,
+  userParseAccess/1
+]).
 
 userLogin(Login,_Pid,Password) ->
   D = authDbOpen(),
@@ -23,6 +28,26 @@ userLogin(Login,_Pid,Password) ->
       {error, Reason}
   end.
 
+userCheckAccess(AccessToken) ->
+  {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
+  try
+    [Header, Data, Crc] = binary:split(AccessToken, [<<".">>], [global]),
+    Crc = list_to_binary(u:md5_hex(<<Header/binary,<<".">>/binary,Data/binary,Salt/binary>>)),
+    Expire = maps:get(<<"exp">>, jsone:decode(base64:decode(Data))),
+    T = u:utime(asinteger),
+    T < Expire
+  catch
+    _:_ -> false
+  end.
+
+userParseAccess(AccessToken) ->
+  try
+    [_Header, Data, _Crc] = binary:split(AccessToken, [<<".">>], [global]),
+    jsone:decode(base64:decode(Data))
+  catch
+    _:_ -> maps:new()
+  end.
+
 userRefreshTokens(RefreshToken) ->
   D = authDbOpen(),
   case D of
@@ -36,7 +61,6 @@ userRefreshTokens(RefreshToken) ->
           {ok, {AccessToken, NewRefreshToken}};
         {error, Reason} ->
           file:close(IoDev),
-          u:trace("AUTH_FILE_NOT_FOUND", Reason),
           {error, Reason}
       end;
     {error, Reason} ->
@@ -44,36 +68,29 @@ userRefreshTokens(RefreshToken) ->
   end.
 
 genTokens(UserStruct) ->
-  genTokens(UserStruct, 1800).
-
-genTokens(UserStruct, ExpireSeconds) ->
-  {MegaSecs, Secs, _MicroSecs} = erlang:timestamp(),
-  Utime = MegaSecs * 1000000 + Secs,
   {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
-  Refresh = uuid:uuid_to_string(uuid:get_v4(), binary_standard),
+  {ok, ExpireAccess} = websocket_app:get_env(<<"admin.tokens.expire-access">>, 1800), %30 min default
+  {ok, ExpireRefresh} = websocket_app:get_env(<<"admin.tokens.expire-refresh">>, 5184000),  %60 days default
+  RefreshToken = uuid:uuid_to_string(uuid:get_v4(), binary_standard),
+  Refresh = #{expire => u:utime(asinteger) + ExpireRefresh, token => RefreshToken},
   Header = [{alg, <<"MD5">>}, {typ, <<"JWT">>}],
   UserName = maps:get(<<"name">>, maps:get(<<"userdata">>, UserStruct)),
   UserLogin = maps:get(<<"login">>, maps:get(<<"userdata">>, UserStruct)),
-  Payload = [{exp, Utime + ExpireSeconds}, {login, UserLogin}, {name, UserName}],
+  UserRole = maps:get(<<"role">>, maps:get(<<"userdata">>, UserStruct)),
+  Payload = [{exp, u:utime(asinteger) + ExpireAccess}, {login, UserLogin}, {name, UserName}, {role, UserRole}],
   Data = base64:encode_to_string(jsone:encode(Header)) ++ "." ++ base64:encode_to_string(jsone:encode(Payload)),
   Hash = list_to_binary(u:md5_hex(Data ++ Salt)),
   BinData = list_to_binary(Data),
-  {ok, <<BinData/binary, <<".">>/binary, Hash/binary>>, Refresh}.
+  Access = #{expire => u:utime(asinteger) + ExpireAccess, token => <<BinData/binary, <<".">>/binary, Hash/binary>>},  
+  {ok, Access, Refresh}.
   
-
 saveSession(UserStruct, RefreshToken) ->
-  saveSession(UserStruct, RefreshToken, 5184000). %60 days default
-
-saveSession(UserStruct, RefreshToken, ExpireSeconds) ->
-  {MegaSecs, Secs, _MicroSecs} = erlang:timestamp(),
-  Expire = MegaSecs * 1000000 + Secs + ExpireSeconds,
-  Session = #{expire => Expire, token => RefreshToken},
   Sessions = maps:get(<<"sessions">>, UserStruct),
   AddSession = case lists:foldl(fun(_X, Sum) -> 1 + Sum end, 0, Sessions) < 5 of
     true ->
-      Sessions ++ [Session];
+      Sessions ++ [RefreshToken];
     _ -> 
-      [] ++ [Session]
+      [] ++ [RefreshToken]
   end,
   UserStruct1 = maps:update(<<"sessions">>, AddSession, UserStruct),
   UserStruct1.
