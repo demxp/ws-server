@@ -49,7 +49,7 @@ genTokens(UserStruct) ->
 genTokens(UserStruct, ExpireSeconds) ->
   {MegaSecs, Secs, _MicroSecs} = erlang:timestamp(),
   Utime = MegaSecs * 1000000 + Secs,
-  Salt = u:getSetting(salt),
+  {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
   Refresh = uuid:uuid_to_string(uuid:get_v4(), binary_standard),
   Header = [{alg, <<"MD5">>}, {typ, <<"JWT">>}],
   UserName = maps:get(<<"name">>, maps:get(<<"userdata">>, UserStruct)),

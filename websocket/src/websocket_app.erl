@@ -7,10 +7,11 @@
 %% API.
 -export([start/2]).
 -export([stop/1]).
--export([custom_404_hook/4]).
+-export([custom_404_hook/4, get_env/1]).
 
 %% API.
 start(_Type, _Args) ->
+  load_config("./sett.dat"),
 	Dispatch = cowboy_router:compile([
 		{'_', [
 			{"/static/css/[...]", cowboy_static, {priv_dir, websocket, <<"static/css">>, [
@@ -27,8 +28,8 @@ start(_Type, _Args) ->
 			{"/websocket", ws_handler, []}
 		]}
 	]),
-	
-	{ok, _} = cowboy:start_clear(http, [{port, 1881}], #{
+	{ok, Port} = websocket_app:get_env(<<"server.port">>),
+	{ok, _} = cowboy:start_clear(http, [{port, Port}], #{
     env => #{dispatch => Dispatch}
   }),
 
@@ -63,6 +64,24 @@ acc_log(Status, Req) ->
 	Method = cowboy_req:method(Req),
 	PeerStr = inet_parse:ntoa(PeerAddr),		
 	histwriter ! {access, [{peer, PeerStr}, {method, Method}, {url, Url}, {status, Status}]}.
+
+load_config(File) ->
+  {ok, Data} = file:read_file(File),
+  D = jsone:decode(Data, [{object_format, proplist}]),
+  ConfigList = u:parse_config(D),
+  ets:new(settings_tab, [set, {keypos, 1}, named_table]),
+  SaveParam = fun({Key, Val}) ->
+    ets:insert(settings_tab, {{env, Key}, Val})
+  end,
+  lists:map(SaveParam, ConfigList),
+  {ok, loaded}.
+
+get_env(Key) ->
+    case ets:lookup(settings_tab, {env, Key}) of
+  [{_, Val}] -> {ok, Val};
+  _ -> undefined
+    end.
+
 
 stop(_State) ->
   ok = cowboy:stop_listener(http).

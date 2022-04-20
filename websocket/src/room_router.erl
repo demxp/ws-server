@@ -8,9 +8,9 @@
 -define(SERVER, ?MODULE).
 
 -record(room,{id, name, options, created}).
--record(settings,{logging=1, histsend=0, userstat=1, broadcast_lists=0}).
--record(state,{room=#room{}, increment=0, banincr=0, db=ets:new(?MODULE, [set]), pid2id=ets:new(?MODULE, [bag]), banned=ets:new(?MODULE, [bag]), settings=#settings{}}).
--record(user,{pid, ip, status, lact}).
+-record(settings,{logging=0, histsend=0, userstat=0, broadcast_lists=0}).
+-record(state,{room=#room{}, increment=0, db=ets:new(?MODULE, [set, {keypos, 1}]), pid2id=ets:new(?MODULE, [bag]), settings=#settings{}}).
+-record(user,{pid, status, lact}).
 
 start_link(Params) ->
 	gen_server:start_link({local, ?MODULE}, ?MODULE, Params, []).
@@ -18,7 +18,7 @@ start_link(Params) ->
 init(Params) ->
 	process_flag(trap_exit, true),
 	RoomData = #room{id = Params#room.id, name = Params#room.name},
-	State = #state{increment = 1, banincr = 1, room = RoomData},
+	State = #state{increment = 1, room = RoomData},
 	{ok, State}.
 
 % sends Msg to anyone logged in as Id
@@ -37,8 +37,11 @@ setadm(ServerPid, Usnum) ->
 handle_call({register, Pid, Ip}, _From, #state{} = State) when is_pid(Pid) ->
 	case test_ban(Ip, State) of
 		{ok, nf, _} ->
-			ets:insert(State#state.db, {State#state.increment, #user{pid=Pid, ip=Ip, status='ordinar', lact=u:utime()}}),
-			ets:insert(State#state.pid2id, {Pid, State#state.increment}),
+			UserKey = <<<<"user-">>/binary, (integer_to_binary(State#state.increment))/binary>>,
+			UserIpKey = <<<<"ip-">>/binary,UserKey/binary>>,
+			ets:insert(State#state.db, {UserKey, #user{pid=Pid, status='ordinar', lact=u:utime()}}),
+			ets:insert(State#state.db, {UserIpKey, u:ip2binary(Ip)}),
+			ets:insert(State#state.pid2id, {Pid, UserKey}),
 			link(Pid),
 			% if
 			% 	State#state.settings#settings.broadcast_lists == 1 ->
@@ -48,7 +51,6 @@ handle_call({register, Pid, Ip}, _From, #state{} = State) when is_pid(Pid) ->
 			% 	true ->
 			% 		ok
 			% end,
-			Oldincr = State#state.increment,
 			Newincr = State#state.increment + 1,
 			% if
 			% 	State#state.settings#settings.histsend == 1 ->
@@ -58,35 +60,44 @@ handle_call({register, Pid, Ip}, _From, #state{} = State) when is_pid(Pid) ->
 			% 	true -> 
 			% 		ok
 			% end,
-			{reply, {normal, Oldincr}, State#state{increment=Newincr}};
+			{reply, {normal, UserKey}, State#state{increment=Newincr}};
 		{ok, banned, _} -> 
 			{reply, {banned, 0}, State}
 	end;
 handle_call({logout, Pid}, _From, #state{} = State) when is_pid(Pid) ->
 	unlink(Pid),
-	PidRows = ets:lookup(State#state.pid2id, Pid),
-	case PidRows of
-		[] -> ok;
-		_ ->
-			[{_Pid,ServNum}|_] = PidRows,
-			ets:delete(State#state.pid2id, Pid),
-			ets:delete(State#state.db, ServNum)
-			% SendList = State#state.settings#settings.broadcast_lists,
-			% if
-			% 	SendList == 1 -> lst();
-			% 	true -> ok
-			% end;
+	ClearUser = fun({UserPid, UserKey}) ->
+		ets:delete(State#state.pid2id, UserPid),
+		ets:delete(State#state.db, UserKey)
+		% SendList = State#state.settings#settings.broadcast_lists,
+		% if
+		% 	SendList == 1 -> lst();
+		% 	true -> ok
+		% end;
 	end,
+	u:ets_result(ets:lookup(State#state.pid2id, Pid),ClearUser),
+	{reply, ok, State};
+handle_call({userbanip, Usernum}, _From, #state{} = State) ->
+	SendMessage = fun(User) ->
+		Pid = User#user.pid,
+		Pid ! {sreply, jsonx:encode([{action, systemsay},{user, system},{message, youbanned}])},
+		Pid ! {disconn, ""}
+	end,
+	AddBannedIp = fun(Ip) ->
+		IpKey = <<<<"ip-banned-">>/binary,Ip/binary>>,
+		ets:insert(State#state.db, {IpKey})
+	end,
+	UserKey = <<<<"user-">>/binary,Usernum/binary>>,
+	UserIpKey = <<<<"ip-">>/binary,UserKey/binary>>,	
+	u:ets_result(ets:lookup(State#state.db, UserIpKey),AddBannedIp),
+	u:ets_result(ets:lookup(State#state.db, UserKey), SendMessage),
 	{reply, ok, State};
 handle_call({setadminstatus, Usernum}, _From, #state{} = State) ->
-	User = ets:lookup(State#state.db, Usernum),
-	case User of
-		[] ->
-			ok;
-		_ ->
-			[{_Num, Curruserdata}] = User,
-			ets:update_element(State#state.db, Usernum, {2, Curruserdata#user{status='admin', lact=u:utime()}})
+	UpdateUser = fun({Id, User}) ->
+		NUser = User#user{status='admin', lact=u:utime()},
+		ets:insert(State#state.db, {Id, NUser})
 	end,
+	u:ets_result(ets:lookup(State#state.db, Usernum), UpdateUser),
 	{reply, ok, State}.	
 %handle_call({send, Id, Msg}, _From, State) ->
 % get pids who are logged in as this Id
@@ -108,8 +119,11 @@ handle_info(Info, #state{} = State) ->
 	{noreply, State}.
 
 handle_cast({send, Message, _Name, Servnum}, #state{} = State) ->
-	Wrapper = fun({_Userid, User}, Acc) ->
-		User#user.pid ! Message,
+	Wrapper = fun({<<KI:5/binary, _H/binary>>, User}, Acc) ->
+		case KI of
+			<<"user-">> -> User#user.pid ! Message;
+			_ -> ok
+		end,
 		Acc
 	end,
 	ets:foldl(Wrapper, [], State#state.db),
@@ -147,23 +161,20 @@ handle_cast(_Msg, #state{} = State) ->
 % 	end,
 % 	State1.
 
-updateActivity(Servnum, State) ->
-	User = ets:lookup(State#state.db, Servnum),
-	case User of
-		[] ->
-			ok;
-		_ ->
-			[{Usernum, Curruserdata}] = User,
-			ets:update_element(State#state.db, Usernum, {2, Curruserdata#user{lact=u:utime()}})
-	end.	
-	
-test_ban(Ip, #state{} = State) ->
-	Lst = ets:match(State#state.banned,{'$1',Ip}),
-	case Lst of
-		[] ->
-			{ok, nf, State};
-		_ ->
-			{ok, banned, State}
+updateActivity(Usernum, State) ->
+	UpdateUser = fun({Id, User}) ->
+		NUser = User#user{lact=u:utime()},
+		ets:insert(State#state.db, {Id, NUser})
+	end,
+	u:ets_result(ets:lookup(State#state.db, Usernum), UpdateUser).
+
+test_ban(Ip, State) ->
+	BinIp = u:ip2binary(Ip),
+	IpKey = <<<<"ipbanned-">>/binary,BinIp/binary>>,
+	Res = ets:member(State#state.db, IpKey),
+	case Res of
+		false -> {ok, nf, State};
+		true -> {ok, banned, State}
 	end.
 
 terminate(_Reason, _State) ->
