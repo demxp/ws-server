@@ -9,6 +9,7 @@
 	logout/2,
 	set_user_vars/3,
 	roomlist/2,
+	kickuser/2,
 	banuser/2,
 	unbanuser/2,
 	banlist/2
@@ -46,8 +47,11 @@ set_user_vars(ServerPid, Usnum, Vars) ->
 roomlist(ServerPid, Pid) when is_pid(Pid) ->
 	gen_server:cast(ServerPid, {roomlist, Pid}).
 
+kickuser(ServerPid, Usernum) ->
+	gen_server:call(ServerPid, {kickuser, Usernum}).		
+
 banuser(ServerPid, Usernum) ->
-	gen_server:call(ServerPid, {userbanip, Usernum}).		
+	gen_server:call(ServerPid, {banuser, Usernum}).		
 	
 unbanuser(ServerPid, Ipaddr) ->
 	gen_server:call(ServerPid, {unbanip, Ipaddr}).	
@@ -98,7 +102,15 @@ handle_call({logout, Pid}, _From, #state{} = State) when is_pid(Pid) ->
 	end,
 	u:ets_result(ets:lookup(State#state.pid2id, Pid),ClearUser),
 	{reply, ok, State};
-handle_call({userbanip, Usernum}, _From, #state{} = State) ->
+handle_call({kickuser, Usernum}, _From, #state{} = State) ->
+	SendMessage = fun({_Key, User}) ->
+		Pid = User#user.pid,
+		Pid ! {sreply, jsone:encode([{action, kickuser},{user, system},{message, <<>>},{error, youkicked}])},
+		Pid ! {disconn, ""}
+	end,
+	u:ets_result(ets:lookup(State#state.db, Usernum), SendMessage),
+	{reply, ok, State};
+handle_call({banuser, Usernum}, _From, #state{} = State) ->
 	SendMessage = fun({_Key, User}) ->
 		Pid = User#user.pid,
 		Pid ! {sreply, jsone:encode([{action, banuser},{user, system},{message, <<>>},{error, youbanned}])},

@@ -133,6 +133,9 @@ $(function() {
       case ('youbanned'):
         return 'Вы забанены на сервере.';
         break;
+      case ('youkicked'):
+        return 'Вас отключили от сервера.';
+        break;        
       case ('notregistered'):
         return 'Вы не можете писать без регистрации в комнате.';
         break;
@@ -266,7 +269,16 @@ $(function() {
         parsesett(m.message);
         break;
       default:
-        $('#msgs').prepend('<p style="color:red">Система: <span style="color:#000">' + m.message + '</span></p>');
+        let actions = ['banuser', 'kickuser', 'unbanuser'];
+        if(!!actions.find(item => item == m.action)){
+          if('error' in m){
+            $('#msgs').prepend('<p style="color:red">Система: <span style="color:#000">При выполнении команды:' + m.action + ' вернулась ошибка: ' + m.error + '</span></p>');
+          }else{
+            $('#msgs').prepend('<p style="color:green">Система: <span style="color:#000">Команда:' + m.action + ' выполнена успешно.</span></p>');
+          }
+        }else{
+          $('#msgs').prepend('<p style="color:red">Система: <span style="color:#000">' + m.message + '</span></p>');
+        }
         break;
     }
   }
@@ -275,7 +287,7 @@ $('.sendmess').click(function() {
   var p = $('input[name=message]');
   if (p.val().length > 1) {
     var mess = {};
-    if (admpass != 0) {
+    if (!!admpass) {
       mess.token = admpass();
     }
     mess.action = "say";
@@ -358,8 +370,8 @@ $('body').on('click', 'button', function() {
     case ('ukick'):
       if (confirm("Отключить от сервера?")) {
         var pagestat = {};
-        pagestat.action = "admkick";
-        pagestat.token = admpass;
+        pagestat.action = "kickuser";
+        pagestat.token = admpass();
         pagestat.user = rw;
         wss(pagestat);
         setTimeout(function() {
