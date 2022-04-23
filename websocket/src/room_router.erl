@@ -5,6 +5,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,terminate/2, code_change/3]).
 -export([
 	send/2,
+	whisper/2,
 	login/2,
 	logout/2,
 	set_user_vars/3,
@@ -12,28 +13,36 @@
 	kickuser/2,
 	banuser/2,
 	unbanuser/2,
-	banlist/2
+	banlist/2,
+	stop_room/2
 ]).
 
 -define(SERVER, ?MODULE).
 
 -record(room,{id, name, options, created}).
--record(settings,{logging=0, histsend=0, userstat=0, broadcast_lists=0}).
--record(state,{room=#room{}, increment=0, db=ets:new(?MODULE, [set, {keypos, 1}]), pid2id=ets:new(?MODULE, [bag]), settings=#settings{}}).
+-record(state,{
+	room=#room{},
+	increment=0,
+	db=ets:new(?MODULE, [set, {keypos, 1}]),
+	pid2id=ets:new(?MODULE, [bag]),
+	settings=#{logging => 0, histsend => 0, userstat => 0, broadcast_new => 0}
+}).
 -record(user,{params=#{}, pid, lact}).
 
 start_link(Params) ->
-	gen_server:start_link({local, ?MODULE}, ?MODULE, Params, []).
+	gen_server:start_link(?MODULE, Params, []).
 
-init(Params) ->
+init({Id, Name}) ->
 	process_flag(trap_exit, true),
-	RoomData = #room{id = Params#room.id, name = Params#room.name},
+	RoomData = #room{id = Id, name = Name},
 	State = #state{increment = 1, room = RoomData},
 	{ok, State}.
 
-% sends Msg to anyone logged in as Id
-send(ServerPid, {Msg, Name, Num}) ->
-	gen_server:cast(ServerPid, {send, Msg, Name, Num}).
+send(ServerPid, {Msg, Num}) ->
+	gen_server:cast(ServerPid, {send, Msg, Num}).
+
+whisper(ServerPid, {Msg, Sender, Recipient}) ->
+	gen_server:cast(ServerPid, {whisper, Msg, Sender, Recipient}).
 
 login(ServerPid, {Pid, Ip}) when is_pid(Pid) ->
 	gen_server:call(ServerPid, {register, Pid, Ip}).
@@ -59,20 +68,21 @@ unbanuser(ServerPid, Ipaddr) ->
 banlist(ServerPid, Pid) ->	
 	gen_server:cast(ServerPid, {banlist, Pid}).
 
+stop_room(Pid, Reason) ->
+	gen_server:stop(Pid, Reason, infinity).
+
 handle_call({register, Pid, Ip}, _From, #state{} = State) when is_pid(Pid) ->
 	case test_ban(Ip, State) of
 		{ok, nf, _} ->
 			UserKey = <<<<"user-">>/binary, (integer_to_binary(State#state.increment))/binary>>,
 			UserIpKey = <<<<"ip-">>/binary,UserKey/binary>>,
 			ets:insert(State#state.db, {UserKey, #user{pid=Pid, lact=u:utime()}}),
-			ets:insert(State#state.db, {UserIpKey, u:ip2binary(Ip)}),
+			ets:insert(State#state.db, {UserIpKey, Ip}),
 			ets:insert(State#state.pid2id, {Pid, UserKey}),
 			link(Pid),
 			% if
 			% 	State#state.settings#settings.broadcast_lists == 1 ->
 			% 		lst();
-			% 	State#state.settings#settings.broadcast_lists == 0 ->
-			% 		ok;
 			% 	true ->
 			% 		ok
 			% end,
@@ -155,7 +165,7 @@ handle_info(Info, #state{} = State) ->
 	end,
 	{noreply, State}.
 
-handle_cast({send, Message, _Name, Servnum}, #state{} = State) ->
+handle_cast({send, Message, Servnum}, #state{} = State) ->
 	Wrapper = fun({<<KI:5/binary, _H/binary>>, User}, Acc) ->
 		case KI of
 			<<"user-">> -> User#user.pid ! Message;
@@ -165,6 +175,22 @@ handle_cast({send, Message, _Name, Servnum}, #state{} = State) ->
 	end,
 	ets:foldl(Wrapper, [], State#state.db),
 	updateActivity(Servnum, State),
+	{noreply, State};
+handle_cast({whisper, Msg, SenderId, RecipientId}, #state{} = State) ->
+	SendMessage = fun({_Id, User}) ->
+		User#user.pid ! Msg,
+		{ok, sended}
+	end,
+	SendError = fun({_Id, User}) -> 
+		User#user.pid ! {cast_reply, {whisper, {}, error}} 
+	end,
+	Stat = u:ets_result(ets:lookup(State#state.db, RecipientId), SendMessage),
+	ToSender = case Stat of
+		{ok, sended} -> SendMessage;
+		_ -> SendError
+	end,
+	u:ets_result(ets:lookup(State#state.db, SenderId), ToSender),
+	updateActivity(SenderId, State),
 	{noreply, State};
 handle_cast({roomlist, Pid}, #state{} = State) ->
 	Wrapper = fun({<<KI:5/binary, H/binary>>, Item}, Acc) ->
@@ -178,7 +204,7 @@ handle_cast({roomlist, Pid}, #state{} = State) ->
 		end
 	end,
 	Lst = ets:foldl(Wrapper, [], State#state.db),
-	Pid ! {sreply, jsone:encode([{action, roomlist},{user, system},{message, Lst}])},
+	Pid ! {cast_reply, {roomlist, Lst, ok}},
 	{noreply, State};
 handle_cast({banlist, Pid}, #state{} = State) ->
 	Wrapper = fun({<<KI:6/binary, H/binary>>, Time}, Acc) ->
@@ -192,7 +218,7 @@ handle_cast({banlist, Pid}, #state{} = State) ->
 		end
 	end,
 	Lst = ets:foldl(Wrapper, [], State#state.db),
-	Pid ! {sreply, jsone:encode([{action, banlist},{user, system},{message, Lst}])},
+	Pid ! {cast_reply, {banlist, Lst, ok}},	
 	{noreply, State};
 
 % handle_cast({getlst}, #state{} = State) ->
@@ -235,15 +261,22 @@ updateActivity(Usernum, State) ->
 	u:ets_result(ets:lookup(State#state.db, Usernum), UpdateUser).
 
 test_ban(Ip, State) ->
-	BinIp = u:ip2binary(Ip),
-	IpKey = <<<<"ip-banned-">>/binary,BinIp/binary>>,
+	IpKey = <<<<"ip-banned-">>/binary,Ip/binary>>,
 	Res = ets:member(State#state.db, IpKey),
 	case Res of
 		false -> {ok, nf, State};
 		true -> {ok, banned, State}
 	end.
 
-terminate(_Reason, _State) ->
+terminate(_Reason, State) ->
+	Wrapper = fun({<<KI:5/binary, _H/binary>>, User}, Acc) ->
+		case KI of
+			<<"user-">> -> User#user.pid ! {room_closed};
+			_ -> ok
+		end,
+		Acc
+	end,
+	ets:foldl(Wrapper, [], State#state.db),
 	ok.
 
 code_change(_OldVsn, State, _Extra) ->

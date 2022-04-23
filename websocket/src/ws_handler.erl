@@ -5,12 +5,12 @@
 -export([websocket_info/2]).
 -export([websocket_terminate/3]).
 
--record(user,{servid=0, id="0", name = <<"Anonymous">>, ip, role = <<"ordinar">>, registered="none", token="none", room, room_pid, ping_timer}).
+-record(user,{servid=0, registered="none", token="none", room, room_pid, ping_timer, fields=#{}}).
 
 init(Req, _Opts) ->
 	{IpAddress, _} = cowboy_req:peer(Req),
 	Url = cowboy_req:path(Req),	
-	State = #user{ip=IpAddress},
+	State = #user{fields=setUserFields(#{}, [{ipaddr, u:ip2binary(IpAddress)},{role, <<"ordinar">>},{name, <<"Anonymous">>}])},
 	Ret = case access_test:test(IpAddress, Url) of
 		{ok, _} ->
 			State1 = schedule_ping(State, 30000),
@@ -20,7 +20,6 @@ init(Req, _Opts) ->
 			{ok, Req1, undefined}
 	end,
 	Ret.
-
 
 websocket_handle({text, Msg}, State) ->
 	MssDec = jsone:try_decode(Msg, [{object_format, tuple},reject_invalid_utf8,{keys, atom}]),
@@ -39,6 +38,14 @@ websocket_handle(_Data, State) ->
 
 %websocket_info({timeout, _Ref, Msg}, State) ->
 %	{reply, {text, Msg}, Req, State};
+websocket_info({room_closed}, State) ->
+	Text = jsone:encode([{action,room_close}]),
+	NewState = State#user{servid=0, registered="none", room=undefined, room_pid=undefined},
+	{[{text, Text}], NewState};
+websocket_info({cast_reply, Msg}, State) ->
+	{Action, Data, Status} = Msg,
+	Text = jsone:encode(#{action => Action, status => Status, data => Data}),
+	{[{text, Text}], State};
 websocket_info({sreply, Msg}, State) ->
 	{[{text, Msg}], State};
 websocket_info({disconn, Msg}, State) ->
@@ -50,46 +57,58 @@ websocket_info(_Info, State) ->
 
 websocket_terminate(_Reason, _Req, _State) ->
 	ok.
-	
+
 analize({Data}, State1) ->
+	ExcludeUserFields = [ipaddr],
 	Action = proplists:get_value(action, Data, <<"ERROR">>),
 	AccessToken = proplists:get_value(token, Data, <<"ERROR">>),
 	State = case user_tokens:userCheckAccess(AccessToken) of
 		true -> 
-			TokenParams = user_tokens:userParseAccess(AccessToken),
-			State1#user{name = maps:get(<<"name">>, TokenParams, <<"Anonymous">>), role = maps:get(<<"role">>, TokenParams, <<"ordinar">>)};
-		false -> State1
+			State1#user{fields = renewMapFromToken(AccessToken, State1#user.fields)};
+		false -> 
+			State1
 	end,
-	Reply = defaultReply([{action, Action},{role, State#user.role},{name, State#user.name}]),
+	Reply = defaultReply([{action, Action},{user, getUserFields(State#user.fields, {exclude, ExcludeUserFields})}]),
+	ReplyNoUser = defaultReply([{action, Action}]),
+	CURole = getUserFields(State#user.fields, role),
 	RPid = State#user.room_pid,
 	try
 		case binary_to_list(Action) of
-			"register" ->
-				Usname = proplists:get_value(name, Data, <<"Anonymous">>),
-				Usid = proplists:get_value(userid, Data, 0),
+			"enterinroom" ->
 				Usroom = proplists:get_value(room, Data, <<"All">>),
-				Userip = State#user.ip,
 				{Stat, RoomPid} = router_main:get_room(Usroom),
 				case Stat of
 					error ->
-						self() ! Reply([{error,roomnotfound}]),
+						self() ! Reply([{error,roomnotfound},{room, Usroom},{user, <<>>}]),
 						State;
 					ok -> 
-						{Regstat, Usernum} = room_router:login(RoomPid, {self(), Userip}),
+						{Regstat, Usernum} = room_router:login(RoomPid, {self(), getUserFields(State#user.fields, ipaddr)}),
 						case Regstat of
 							'normal' ->
-								room_router:set_user_vars(RoomPid, Usernum, #{name => Usname, id => Usid, ipaddr => u:ip2binary(Userip), role => <<"ordinar">>}),
-								self() ! Reply([{status,ok},{num, Usernum},{name, Usname}]),
-								State#user{servid=Usernum, id=Usid, name=Usname, registered="yes", room=Usroom, room_pid=RoomPid};
+								self() ! Reply([{status,ok},{num, Usernum},{room, Usroom}]),
+								room_router:set_user_vars(RoomPid, State#user.servid, State#user.fields),
+								State#user{servid=Usernum, registered="yes", room=Usroom, room_pid=RoomPid};
 							'banned' ->
-								self() ! Reply({disconn, [{error,youbanned}]}),
+								self() ! Reply({disconn, [{error,youbanned},{user, <<>>}]}),
 								State
 						end
-				end;
+				end;			
+			"setdata" ->
+				Fields = proplists:get_value(fields, Data, []),
+				UpdatedUserFields = setUserFields(State#user.fields, Fields),
+				ifRegistered(fun() -> room_router:set_user_vars(RPid, State#user.servid, UpdatedUserFields) end, State),
+				self() ! Reply([{status,ok},{user, getUserFields(UpdatedUserFields, {exclude, ExcludeUserFields})}]),
+				State#user{fields = UpdatedUserFields};
 			"say" ->
 				checkRoomRegistration(State),
-				Dtsend = Reply([{num, State#user.servid},{id, State#user.id},{message, proplists:get_value(message, Data)}]),
-				room_router:send(RPid, {Dtsend, State#user.name, State#user.servid}),
+				Dtsend = Reply([{num, State#user.servid},{message, proplists:get_value(message, Data)}]),
+				room_router:send(RPid, {Dtsend, State#user.servid}),
+				State;
+			"whisper" ->
+				checkRoomRegistration(State),
+				Recipient = proplists:get_value(to, Data, <<"empty">>),
+				Dtsend = Reply([{num, State#user.servid},{message, proplists:get_value(message, Data)}]),
+				room_router:whisper(RPid, {Dtsend, State#user.servid, Recipient}),
 				State;
 			"ping" ->
 				self() ! {sreply, jsone:encode([{action,ping}, {message, pong}])},
@@ -97,60 +116,71 @@ analize({Data}, State1) ->
 			"login" ->
 				Login = proplists:get_value(login, Data, <<"Anonymous">>),
 				Password = proplists:get_value(password, Data, <<"password">>),
-				case user_tokens:userLogin(Login, self(), Password) of
+				UpdatedUF = case user_tokens:userLogin(Login, self(), Password) of
 					{ok, {Access, Refresh}} -> 
-						TPar = user_tokens:userParseAccess(maps:get(token,Access)),
-						Nm = maps:get(<<"name">>, TPar, <<"Anonymous">>),
-						Rl = maps:get(<<"role">>, TPar, <<"ordinar">>),
-						ifRegistered(fun() -> room_router:set_user_vars(RPid, State#user.servid, #{name => Nm, role => Rl}) end, State),
-						self() ! Reply([{status,ok},{role, Rl},{name, Nm},{token, Access},{refresh, Refresh}]);
+						UpdatedUserFields = renewMapFromToken(maps:get(token,Access), State#user.fields),
+						ifRegistered(fun() -> room_router:set_user_vars(RPid, State#user.servid, UpdatedUserFields) end, State),
+						self() ! Reply([{status,ok},{user, UpdatedUserFields},{token, Access},{refresh, Refresh}]),
+						UpdatedUserFields;
 					{error, _} -> 
-						self() ! Reply([{error,errorlogindata}])
+						self() ! Reply([{error,errorlogindata}]),
+						State#user.fields
 				end,
-				State;
+				State#user{fields = UpdatedUF};
 			"refresh" ->
 				RefreshToken = proplists:get_value(refresh, Data, <<"badtoken">>),
-				case user_tokens:userRefreshTokens(RefreshToken) of
+				UpdatedUF = case user_tokens:userRefreshTokens(RefreshToken) of
 					{ok, {Access, Refresh}} -> 
-						TPar = user_tokens:userParseAccess(maps:get(token,Access)),
-						Nm = maps:get(<<"name">>, TPar, <<"Anonymous">>),
-						Rl = maps:get(<<"role">>, TPar, <<"ordinar">>),
-						ifRegistered(fun() -> room_router:set_user_vars(RPid, State#user.servid, #{name => Nm, role => Rl}) end, State),						
-						self() ! Reply([{status,ok},{role, Rl},{name, Nm},{token, Access},{refresh, Refresh}]);
+						UpdatedUserFields = renewMapFromToken(maps:get(token,Access), State#user.fields),
+						ifRegistered(fun() -> room_router:set_user_vars(RPid, State#user.servid, UpdatedUserFields) end, State),
+						self() ! Reply([{status,ok},{user, UpdatedUserFields},{token, Access},{refresh, Refresh}]),
+						UpdatedUserFields;
 					{error, _} -> 
-						self() ! Reply([{error,errorrefresh}])
+						self() ! Reply([{error,errorrefresh}]),
+						State#user.fields						
 				end,
-				State;
+				State#user{fields = UpdatedUF};
 			"operation" ->
 				checkRoomRegistration(State),
 				Fun = fun() ->
 					Dtsend = Reply([{num, State#user.servid},{operation, proplists:get_value(operation, Data, <<"empty">>)}]),
-					room_router:send(RPid, {Dtsend, State#user.name, State#user.servid})
+					room_router:send(RPid, {Dtsend, State#user.servid})
 				end,
-				execOnly([<<"admin">>,<<"moderator">>], Fun, State, Reply),
+				execOnly([<<"admin">>,<<"moderator">>], Fun, CURole),
 				State;
 			"roomlist" ->
 				checkRoomRegistration(State),
-				execOnly([<<"admin">>,<<"moderator">>], fun() -> room_router:roomlist(RPid, self()) end, State, Reply),
+				execOnly([<<"admin">>,<<"moderator">>], fun() -> room_router:roomlist(RPid, self()) end, CURole),
 				State;
 			"banuser" ->
 				checkRoomRegistration(State),
 				UserId = proplists:get_value(user, Data, <<"user-no">>),
-				execOnly([<<"admin">>,<<"moderator">>], fun() -> room_router:banuser(RPid, UserId) end, State, Reply),
+				execOnly([<<"admin">>,<<"moderator">>], fun() -> room_router:banuser(RPid, UserId) end, CURole, ReplyNoUser),
 				State;
 			"unbanuser" ->
 				checkRoomRegistration(State),
 				IpAddr = proplists:get_value(ipaddr, Data, <<"10">>),
-				execOnly([<<"admin">>,<<"moderator">>], fun() -> room_router:unbanuser(RPid, IpAddr) end, State, Reply),
+				execOnly([<<"admin">>,<<"moderator">>], fun() -> room_router:unbanuser(RPid, IpAddr) end, CURole, ReplyNoUser),
 				State;
 			"kickuser" ->
 				checkRoomRegistration(State),
 				UserId = proplists:get_value(user, Data, <<"user-no">>),
-				execOnly([<<"admin">>,<<"moderator">>], fun() -> room_router:kickuser(RPid, UserId) end, State, Reply),
+				execOnly([<<"admin">>,<<"moderator">>], fun() -> room_router:kickuser(RPid, UserId) end, CURole, ReplyNoUser),
 				State;
 			"banlist" ->
 				checkRoomRegistration(State),
-				execOnly([<<"admin">>,<<"moderator">>], fun() -> room_router:banlist(RPid, self()) end, State, Reply),
+				execOnly([<<"admin">>,<<"moderator">>], fun() -> room_router:banlist(RPid, self()) end, CURole),
+				State;
+			"list_rooms" ->
+				execOnly([<<"admin">>], fun() -> router_main:list_rooms(self()) end, CURole),
+				State;
+			"create_room" ->
+				RoomToCreate = proplists:get_value(room, Data, <<"All">>),
+				execOnly([<<"admin">>], fun() -> router_main:create_room(RoomToCreate) end, CURole, ReplyNoUser),
+				State;
+			"remove_room" ->
+				RoomToCreate = proplists:get_value(room, Data, <<"000">>),
+				execOnly([<<"admin">>], fun() -> router_main:remove_room(RoomToCreate) end, CURole, ReplyNoUser),
 				State;
 			% "getroomsett" ->
 			% 	Token = proplists:get_value(<<"token">>, Data),
@@ -210,7 +240,7 @@ schedule_ping(State, Interval) ->
   State#user{ping_timer=Ref}.
 	
 defaultReply(DefaultFields) ->
-	DefaultData = #{action => systemsay, user => system, message => <<>>},
+	DefaultData = #{action => systemsay},
 	Updated = lists:foldl(fun(Elem, Acc) -> maps:put(element(1, Elem), element(2, Elem), Acc) end, DefaultData, DefaultFields),	
 	fun(Data) -> 
 		if
@@ -223,15 +253,30 @@ defaultReply(DefaultFields) ->
 	end.
 
 sendReply(Mode, Data, DefaultData) ->
-	Updated = lists:foldl(fun(Elem, Acc) -> maps:put(element(1, Elem), element(2, Elem), Acc) end, DefaultData, Data),
-	{Mode, jsone:encode(Updated)}.
+	Update = fun(Elem, Acc) -> 
+		case element(2, Elem) of
+			<<>> -> maps:remove(element(1, Elem), Acc);
+			_ -> maps:put(element(1, Elem), element(2, Elem), Acc)
+		end
+  end,
+	{Mode, jsone:encode(lists:foldl(Update, DefaultData, Data))}.
 
-execOnly(AllowedRoles, Fun, State, Reply) ->
-	UserRole = State#user.role,
+execOnly(AllowedRoles, Fun, UserRole) ->
+	execOnly(AllowedRoles, Fun, UserRole, false).
+execOnly(AllowedRoles, Fun, UserRole, Reply) ->
 	case lists:search(fun(Role) -> Role == UserRole end, AllowedRoles) of
 		{value, _Value} -> 
-			Fun(),
-			self() ! Reply([{status, ok}]);
+			Stat = Fun(),
+			ToReply = case Stat of
+				ok -> {status, ok};
+				{ok, _T} -> {status, ok};
+				error -> {error, notnamed};
+				{error, Message} -> {error, Message}
+			end,
+			if 
+				is_function(Reply) -> self() ! Reply([ToReply]);
+				true -> ok
+			end;
 		false -> 
 			throw(not_allowed)
 	end.
@@ -246,7 +291,30 @@ ifRegistered(Fun, State) ->
 	case State#user.registered of
 		"none" -> false;
 		"yes" -> Fun()
-	end.	
+	end.
+
+renewMapFromToken(AccessToken, Map) ->
+	TokenParams = user_tokens:userParseAccess(AccessToken),
+	NameUserFromToken = maps:get(<<"name">>, TokenParams, <<"Anonymous">>),
+	RoleUserFromToken = maps:get(<<"role">>, TokenParams, <<"ordinar">>),
+	setUserFields(Map, [{name, NameUserFromToken}, {role, RoleUserFromToken}]).
+
+
+getUserFields(Map, {exclude, Fields}) when is_list(Fields) ->
+	lists:foldl(fun(Elem, Acc) -> maps:remove(Elem, Acc) end, Map, Fields);
+getUserFields(Map, Key) when is_atom(Key) ->
+	getUserFields(Map, Key, <<"DEFAULTVALUE">>).
+getUserFields(Map, Key, Default) ->
+	maps:get(Key, Map, Default).
+	
+
+setUserFields(Map, {Data}) when is_list(Data) ->
+	setUserFields(Map, Data);
+setUserFields(Map, Data) when is_tuple(Data) ->
+	{Param, Value} = Data,
+	maps:put(Param, Value, Map);
+setUserFields(Map, Data) when is_list(Data) ->
+	lists:foldl(fun(Elem, Acc) -> setUserFields(Acc, Elem) end, Map, Data).
 % admaccess(Token, State) when State#user.status =:= "admin" ->
 % 	SavedToken = list_to_binary(State#user.token),
 % 	case SavedToken of

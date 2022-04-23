@@ -19,4 +19,4 @@ start_link() ->
 %% supervisor.
 
 init(_Args) ->
-  {ok, {{one_for_one,10,1000}, []}}.
+  {ok, {{simple_one_for_one,10,60}, [{room_worker, {room_router, start_link, []}, transient, 2000, worker, [room_router]}]}}.

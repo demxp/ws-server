@@ -155,10 +155,19 @@ $(function() {
   ws.onopen = function() {
     $('#connstate').text('ПОДКЛЮЧЕНО').css('color', 'green');
     var mess = {};
-    mess.action = "register";
-    mess.userid = "3243";
-    mess.name = "Администратор";
+    mess.action = "setdata";
+    mess.fields = {
+      id: "3243",
+      name: "Администратор"
+    };
     wss(mess);
+    var mess = {};    
+    mess.action = "enterinroom";
+    mess.room = "sdfsd";
+    wss(mess);    
+    var mess = {};    
+    mess.action = "enterinroom";
+    wss(mess);    
     ping = true;
   }
   ws.onclose = function(evt) {
@@ -183,7 +192,7 @@ $(function() {
       return;
     }
     switch (m.action) {
-      case ('register'):
+      case ('enterinroom'):
         if (getCookie('refreshToken')) {
           renewTokens();
         } else {
@@ -210,10 +219,10 @@ $(function() {
         console.log(m.message);
         break;
       case ('roomlist'):
-        users(m.message);
+        users(m.data);
         break;
       case ('banlist'):
-        banlist(m.message);
+        banlist(m.data);
         break;
       case ('list'):
         $.each(m.message, function(k, val) {
