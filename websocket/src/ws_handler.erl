@@ -43,9 +43,14 @@ websocket_info({room_closed}, State) ->
 	NewState = State#user{servid=0, registered="none", room=undefined, room_pid=undefined},
 	{[{text, Text}], NewState};
 websocket_info({cast_reply, Msg}, State) ->
-	{Action, Data, Status} = Msg,
-	Text = jsone:encode(#{action => Action, status => Status, data => Data}),
-	{[{text, Text}], State};
+	{Text, State1} = case Msg of
+		{login, _Data} -> processTokenResponce(Msg, State);
+		{refresh, _Data} -> processTokenResponce(Msg, State);
+		_ -> 
+			{Action, Data, Status} = Msg,
+			{jsone:encode(#{action => Action, status => Status, data => Data}), State}
+	end,
+	{[{text, Text}], State1};
 websocket_info({sreply, Msg}, State) ->
 	{[{text, Msg}], State};
 websocket_info({disconn, Msg}, State) ->
@@ -57,6 +62,17 @@ websocket_info(_Info, State) ->
 
 websocket_terminate(_Reason, _Req, _State) ->
 	ok.
+
+processTokenResponce(Data, State) ->
+	case Data of
+		{Mode, {ok, Access, Refresh}} -> 
+			UpdatedUserFields = renewMapFromToken(maps:get(token,Access), State#user.fields),
+			ifRegistered(fun() -> room_router:set_user_vars(State#user.room_pid, State#user.servid, UpdatedUserFields) end, State),
+			{jsone:encode(#{action => Mode, status => ok, token => Access, refresh => Refresh}), State#user{fields = UpdatedUserFields}};
+		{Mode, {error, Err}} -> 
+			{jsone:encode(#{action => Mode, error => Err}), State}
+	end.
+
 
 analize({Data}, State1) ->
 	ExcludeUserFields = [ipaddr],
@@ -116,30 +132,12 @@ analize({Data}, State1) ->
 			"login" ->
 				Login = proplists:get_value(login, Data, <<"Anonymous">>),
 				Password = proplists:get_value(password, Data, <<"password">>),
-				UpdatedUF = case user_tokens:userLogin(Login, self(), Password) of
-					{ok, {Access, Refresh}} -> 
-						UpdatedUserFields = renewMapFromToken(maps:get(token,Access), State#user.fields),
-						ifRegistered(fun() -> room_router:set_user_vars(RPid, State#user.servid, UpdatedUserFields) end, State),
-						self() ! Reply([{status,ok},{user, UpdatedUserFields},{token, Access},{refresh, Refresh}]),
-						UpdatedUserFields;
-					{error, _} -> 
-						self() ! Reply([{error,errorlogindata}]),
-						State#user.fields
-				end,
-				State#user{fields = UpdatedUF};
+				user_token:login(self(), {Login, Password}),
+				State;
 			"refresh" ->
 				RefreshToken = proplists:get_value(refresh, Data, <<"badtoken">>),
-				UpdatedUF = case user_tokens:userRefreshTokens(RefreshToken) of
-					{ok, {Access, Refresh}} -> 
-						UpdatedUserFields = renewMapFromToken(maps:get(token,Access), State#user.fields),
-						ifRegistered(fun() -> room_router:set_user_vars(RPid, State#user.servid, UpdatedUserFields) end, State),
-						self() ! Reply([{status,ok},{user, UpdatedUserFields},{token, Access},{refresh, Refresh}]),
-						UpdatedUserFields;
-					{error, _} -> 
-						self() ! Reply([{error,errorrefresh}]),
-						State#user.fields						
-				end,
-				State#user{fields = UpdatedUF};
+				user_token:refresh(self(), {RefreshToken}),
+				State;
 			"operation" ->
 				checkRoomRegistration(State),
 				Fun = fun() ->

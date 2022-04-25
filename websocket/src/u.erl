@@ -7,7 +7,6 @@
   trace/2,
   traceB/1,
   traceB/2,
-  testadmin/3,
   md5_hex/1,
   getSetting/1,
   utime/0,
@@ -15,7 +14,8 @@
   apply_foo/2,
   ip2binary/1,
   ets_result/2,
-  parse_config/1
+  parse_config/1,
+  index_of/2
 ]).
 
 trace(X) -> spawn(fun() -> io:format("~p~n",[X]) end).
@@ -40,6 +40,12 @@ parseTuple(String) ->
   {ok, Ts, _} = erl_scan:string(String),
   {ok, Tup} = erl_parse:parse_term(Ts),
   {ok, Tup}.
+
+index_of(Item, List) -> index_of(Item, List, 1).
+
+index_of(_, [], _)  -> not_found;
+index_of(Item, [Item|_], Index) -> Index;
+index_of(Item, [_|Tl], Index) -> index_of(Item, Tl, Index+1).
 
 utime() ->
   utime(asbinary).
@@ -92,35 +98,6 @@ parse_config([], StrAcc, Acc, Base) when length(Base) > 0 ->
   parse_config(Base, StrAcc, Acc, Base);
 parse_config([], _StrAcc, Acc, []) -> 
   Acc.
-
-testadmin(generate,Key,Pid) -> 
-	D = file:consult("./sett.dat"),
-	case D of
-		{ok, DataL} -> 
-			Test = lists:member({admpass,Key},DataL),
-	    case Test of
-				true -> 
-					{_,Salt} = lists:keyfind(salt,1,DataL),
-					AdmEncripted = md5_hex(lists:concat([pid_to_list(Pid), Salt])),
-					{ok, AdmEncripted};
-				false -> {error} end;
-		{error,_} -> 
-			u:trace(D),
-			{error}
-	end;
-testadmin(check,Key,Pid) ->
-	D = file:consult("./sett.dat"),
-	case D of
-		{ok, DataL} -> 
-			{_,Salt} = lists:keyfind(salt,1,DataL),
-			AdmEncripted = md5_hex(lists:concat([pid_to_list(Pid), Salt])),
-			case Key =:= AdmEncripted of
-					true ->	{ok, AdmEncripted};
-					false -> {error} end;
-		{error,_} -> 
-			u:trace(D),
-			{error}
-	end.
 
 md5_hex(S) when is_list(S) ->
   S1 = list_to_binary(S),
