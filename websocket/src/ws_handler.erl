@@ -46,6 +46,15 @@ websocket_info({cast_reply, Msg}, State) ->
 	{Text, State1} = case Msg of
 		{login, _Data} -> processTokenResponce(Msg, State);
 		{refresh, _Data} -> processTokenResponce(Msg, State);
+		{create_user, Data} -> 
+			{Status, Resp} = Data,
+			{jsone:encode(#{action => create_admin, status => Status, data => Resp}), State};
+		{remove_user, Data} -> 
+			{Status, Resp} = Data,
+			{jsone:encode(#{action => remove_admin, status => Status, data => Resp}), State};
+		{list_users, Data} -> 
+			{Status, Resp} = Data,
+			{jsone:encode(#{action => list_admins, status => Status, data => Resp}), State};			
 		_ -> 
 			{Action, Data, Status} = Msg,
 			{jsone:encode(#{action => Action, status => Status, data => Data}), State}
@@ -78,7 +87,7 @@ analize({Data}, State1) ->
 	ExcludeUserFields = [ipaddr],
 	Action = proplists:get_value(action, Data, <<"ERROR">>),
 	AccessToken = proplists:get_value(token, Data, <<"ERROR">>),
-	State = case user_tokens:userCheckAccess(AccessToken) of
+	State = case user_token:check(AccessToken) of
 		true -> 
 			State1#user{fields = renewMapFromToken(AccessToken, State1#user.fields)};
 		false -> 
@@ -180,6 +189,20 @@ analize({Data}, State1) ->
 				RoomToCreate = proplists:get_value(room, Data, <<"000">>),
 				execOnly([<<"admin">>], fun() -> router_main:remove_room(RoomToCreate) end, CURole, ReplyNoUser),
 				State;
+			"list_admins" ->
+				execOnly([<<"admin">>], fun() -> user_token:list_users(self()) end, CURole),
+				State;
+			"create_admin" ->
+				Login = proplists:get_value(login, Data, <<"login">>),
+				Name = proplists:get_value(name, Data, <<"Anonymous">>),
+				Password = proplists:get_value(password, Data, <<"simple-password">>),
+				Role = proplists:get_value(role, Data, <<"ordinar">>),
+				execOnly([<<"admin">>], fun() -> user_token:create_user(self(), {Login, Name, Password, Role}) end, CURole),
+				State;
+			"remove_admin" ->
+				UserId = proplists:get_value(id, Data, <<"000">>),
+				execOnly([<<"admin">>], fun() -> user_token:remove_user(self(), UserId) end, CURole),
+				State;				
 			% "getroomsett" ->
 			% 	Token = proplists:get_value(<<"token">>, Data),
 			% 	case admaccess(Token, State) of
@@ -292,7 +315,7 @@ ifRegistered(Fun, State) ->
 	end.
 
 renewMapFromToken(AccessToken, Map) ->
-	TokenParams = user_tokens:userParseAccess(AccessToken),
+	TokenParams = user_token:parse(AccessToken),
 	NameUserFromToken = maps:get(<<"name">>, TokenParams, <<"Anonymous">>),
 	RoleUserFromToken = maps:get(<<"role">>, TokenParams, <<"ordinar">>),
 	setUserFields(Map, [{name, NameUserFromToken}, {role, RoleUserFromToken}]).

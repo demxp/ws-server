@@ -6,7 +6,11 @@
 -export([
   login/2,
   refresh/2,
-  update/0
+  check/1,
+  parse/1,
+  create_user/2,
+  remove_user/2,
+  list_users/1
 ]).
 
 -define(SERVER, ?MODULE).
@@ -19,7 +23,7 @@ start_link() ->
 init([]) ->
   process_flag(trap_exit, true),
   self() ! initall,
-  State = schedule_save(#state{}, websocket_app:get_env(<<"server.login.save-interval">>)),
+  State = schedule_save(#state{}),
   {ok, State}.
 
 login(Pid, {Login, Password}) ->
@@ -28,8 +32,34 @@ login(Pid, {Login, Password}) ->
 refresh(Pid, {Token}) ->
   gen_server:cast(?SERVER, {refresh, Token, Pid}).
 
-update() ->
-  gen_server:call(?SERVER, update).
+create_user(Pid, Params) ->
+  gen_server:cast(?SERVER, {create, Params, Pid}).
+
+remove_user(Pid, Id) ->
+  gen_server:cast(?SERVER, {remove, Id, Pid}).
+
+list_users(Pid) ->
+  gen_server:cast(?SERVER, {list, Pid}).
+
+check(AccessToken) ->
+  {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
+  try
+    [Header, Data, Crc] = binary:split(AccessToken, [<<".">>], [global]),
+    Crc = list_to_binary(u:md5_hex(<<Header/binary,<<".">>/binary,Data/binary,Salt/binary>>)),
+    Expire = maps:get(<<"exp">>, jsone:decode(base64:decode(Data))),
+    T = u:utime(asinteger),
+    T < Expire
+  catch
+    _:_ -> false
+  end.
+
+parse(AccessToken) ->
+  try
+    [_Header, Data, _Crc] = binary:split(AccessToken, [<<".">>], [global]),
+    jsone:decode(base64:decode(Data))
+  catch
+    _:_ -> maps:new()
+  end.
 
 handle_call(update, _From, State) ->
   updateFile(State),
@@ -39,10 +69,40 @@ handle_call(stop, _From, State) ->
 handle_call(_Msg, _From, State) ->
   {reply, {ok, {removed}}, State}.
 
+handle_cast({create, {Login, Name, Password, Role}, Pid}, #state{} = State) ->
+  {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
+  PassHash = list_to_binary(u:sha256_hex(<<Salt/binary,Password/binary,Salt/binary>>)),
+  NUser = #user{login = Login, name = Name, password = PassHash, role = Role},
+  UserId = uuid:uuid_to_string(uuid:get_v4(), binary_standard),
+  ets:insert(State#state.db, {userkey(UserId), NUser}),
+  Pid ! {cast_reply, {create_user, {ok, #{id => UserId, login => Login, name => Name, role => Role}}}},
+  {noreply, State};
+handle_cast({remove, Id, Pid}, #state{} = State) ->
+  ets:delete(State#state.db, userkey(Id)),
+  ets:delete(State#state.db, sesskey(Id)),
+  Pid ! {cast_reply, {remove_user, {ok, removed}}},
+  {noreply, State};
+handle_cast({list, Pid}, #state{} = State) ->
+  Users = ets:match_object(State#state.db, {'_', #user{_='_'}}),
+  FormatUser = fun(Elem, Acc) ->
+    {Key, UserData} = Elem,
+    UserRecInfo = record_info(fields, user),
+    UserRecord = lists:foldl(fun(Param, Acc2) ->
+      Index = u:index_of(Param, UserRecInfo),
+      case Param of
+        password -> Acc2;
+        _ -> maps:put(Param, element(Index+1, UserData), Acc2)
+      end
+    end, #{id => userid(Key)}, UserRecInfo),
+    [UserRecord|Acc]
+  end,
+  Data = lists:foldl(FormatUser, [], Users),
+  Pid ! {cast_reply, {list_users, {ok, Data}}},
+  {noreply, State};  
 handle_cast({login, Login, Password, Pid}, #state{} = State) ->
-  % PasswordHash = list_to_binary(u:md5_hex(Password)),
-  PasswordHash = Password,
-  Resl = ets:match(State#state.db, {'$1', #user{login=Login, password=PasswordHash, _='_'}}),
+  {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
+  PassHash = list_to_binary(u:sha256_hex(<<Salt/binary,Password/binary,Salt/binary>>)),
+  Resl = ets:match(State#state.db, {'$1', #user{login=Login, password=PassHash, _='_'}}),
   try
     [User] = lists:last(Resl),
     {ok, Access, Refresh} = genTokens(userid(User), State),
@@ -76,7 +136,7 @@ handle_cast(_Msg, #state{} = State) ->
   {noreply, State}.
 
 handle_info(do_save, #state{} = State) ->
-  State1 = schedule_save(State, websocket_app:get_env(<<"server.login.save-interval">>)),  
+  State1 = schedule_save(State),  
   updateFile(State1),
   {noreply, State1}; 
 handle_info(initall, #state{} = State) ->
@@ -176,6 +236,11 @@ sesskey(_K) ->
   {error, incorrect}.
 
 authFileOpen() ->
+  Res = case filelib:is_regular("./auth.dat") of
+    false -> createNewAuthFile();
+    true -> ok
+  end,
+  Res = ok,
   D = file:open("./auth.dat", [read, write, binary]),
   case D of
     {ok, IoDev} ->
@@ -185,8 +250,25 @@ authFileOpen() ->
       {error, readfileerror}
   end.
 
-schedule_save(State, Interval) ->
-  {ok, IntervalSec} = Interval,
+createNewAuthFile() ->
+  {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
+  PassHash = list_to_binary(u:sha256_hex(<<Salt/binary,<<"admin-password">>/binary,Salt/binary>>)),
+  UserRecord = #{login => <<"admin">>, name => <<"Admin">>, password => PassHash, role => <<"admin">>},
+  UserId = uuid:uuid_to_string(uuid:get_v4(), binary_standard),
+  Data = jsone:encode(#{userid => UserId, userdata => UserRecord, sessions => []}),
+  Result = file:write_file("./auth.dat", Data),
+  case Result of
+    {error, Reason} -> u:trace("ERROR! Not found auth.dat file! Create error, by reason: ", Reason);
+    ok -> 
+      u:trace("New auth file created!"),
+      u:trace("Login parameters:"),
+      u:trace("Login - 'admin'"),
+      u:trace("Password - 'admin-password'")
+  end,
+  Result.
+
+schedule_save(State) ->
+  {ok, IntervalSec} = websocket_app:get_env(<<"admin.login-server.save-interval">>),
   Ref = erlang:send_after(IntervalSec*1000, self(), do_save),
   State#state{save_timer=Ref}.
 

@@ -15,7 +15,8 @@
   ip2binary/1,
   ets_result/2,
   parse_config/1,
-  index_of/2
+  index_of/2,
+  sha256_hex/1
 ]).
 
 trace(X) -> spawn(fun() -> io:format("~p~n",[X]) end).
@@ -98,6 +99,10 @@ parse_config([], StrAcc, Acc, Base) when length(Base) > 0 ->
   parse_config(Base, StrAcc, Acc, Base);
 parse_config([], _StrAcc, Acc, []) -> 
   Acc.
+
+sha256_hex(S) ->
+  Lst = binary_to_list(crypto:hash(sha256, S)),
+  lists:flatten(list_to_hex(Lst)).
 
 md5_hex(S) when is_list(S) ->
   S1 = list_to_binary(S),
