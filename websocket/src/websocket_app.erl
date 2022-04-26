@@ -16,26 +16,21 @@
 
 %% API.
 start(_Type, _Args) ->
-  load_config("./sett.dat"),
+  load_config(code:priv_dir(websocket) ++ "/sett.dat"),
 	Dispatch = cowboy_router:compile([
 		{'_', [
-			{"/static/css/[...]", cowboy_static, {priv_dir, websocket, <<"static/css">>, [
-				{mimetypes, cow_mimetypes, all}
-			]}},
-			{"/static/js/[...]", cowboy_static, {priv_dir, websocket, <<"static/js">>, [
-				{mimetypes, cow_mimetypes, all}
-			]}},
-			{"/static/img/[...]", cowboy_static, {priv_dir, websocket, <<"static/img">>, [
+			{"/static/[...]", cowboy_static, {priv_dir, websocket, <<"www/static">>, [
 				{mimetypes, cow_mimetypes, all}
 			]}},			
-			{"/", cowboy_static, {priv_file, websocket, "hi.html"}},
-			{"/admininterface", cowboy_static, {priv_file, websocket, "index.html"}},
+			{"/", cowboy_static, {priv_file, websocket, "www/hi.html"}},
+			{"/admininterface", cowboy_static, {priv_file, websocket, "www/index.html"}},
 			{"/websocket", ws_handler, []}
 		]}
 	]),
 	{ok, Port} = websocket_app:get_env(<<"server.port">>),
 	{ok, _} = cowboy:start_clear(http, [{port, Port}], #{
-    env => #{dispatch => Dispatch}
+    env => #{dispatch => Dispatch},
+    middlewares => [cowboy_router, access_log, cowboy_handler]
   }),
 
 	%PrivDir = code:priv_dir(websocket),

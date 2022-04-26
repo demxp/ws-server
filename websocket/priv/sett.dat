@@ -1,0 +1,26 @@
+{
+  "server": {
+    "salt": "JUHVgyu8568guGY57689",
+    "env": "local",
+    "port": 1881,
+    "request":{
+      "min-timeout": 200
+    }
+  },
+  "admin": {
+    "tokens": {
+      "expire-refresh": 5184000,
+      "expire-access": 3600
+    },
+    "login-server":{
+      "save-interval": 180
+    }
+  },
+  "user": {
+    "name": "Vladimir",
+    "home": {
+      "town": "Orsk",
+      "street": "Lenina"
+    }
+  }
+}

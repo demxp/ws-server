@@ -77,7 +77,7 @@ handle_cast(_Msg, #state{} = State) ->
   {noreply, State}.
 
 handle_info({initall}, #state{} = State) ->
-  openDb("./roomsDb.dets"),
+  openDb(code:priv_dir(websocket) ++ "/roomsDb.dets"),
   initAll(State),
   {noreply, State}; 
 handle_info(Info, #state{} = State) ->

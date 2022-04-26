@@ -214,7 +214,7 @@ updateFile(State) ->
     <<Acc/binary, UserRecordFull/binary, <<"\n">>/binary>>
   end,
   Data = lists:foldl(AddSessions, <<>>, Users),
-  file:write_file("./auth.dat", Data).
+  file:write_file(code:priv_dir(websocket) ++ "/auth.dat", Data).
 
 userid(<<"user-record-", UserId/binary>>) ->
   UserId;
@@ -236,12 +236,12 @@ sesskey(_K) ->
   {error, incorrect}.
 
 authFileOpen() ->
-  Res = case filelib:is_regular("./auth.dat") of
+  Res = case filelib:is_regular(code:priv_dir(websocket) ++ "/auth.dat") of
     false -> createNewAuthFile();
     true -> ok
   end,
   Res = ok,
-  D = file:open("./auth.dat", [read, write, binary]),
+  D = file:open(code:priv_dir(websocket) ++ "/auth.dat", [read, write, binary]),
   case D of
     {ok, IoDev} ->
       {ok, IoDev};
@@ -256,7 +256,7 @@ createNewAuthFile() ->
   UserRecord = #{login => <<"admin">>, name => <<"Admin">>, password => PassHash, role => <<"admin">>},
   UserId = uuid:uuid_to_string(uuid:get_v4(), binary_standard),
   Data = jsone:encode(#{userid => UserId, userdata => UserRecord, sessions => []}),
-  Result = file:write_file("./auth.dat", Data),
+  Result = file:write_file(code:priv_dir(websocket) ++ "/auth.dat", Data),
   case Result of
     {error, Reason} -> u:trace("ERROR! Not found auth.dat file! Create error, by reason: ", Reason);
     ok -> 

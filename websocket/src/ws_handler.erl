@@ -9,17 +9,9 @@
 
 init(Req, _Opts) ->
 	{IpAddress, _} = cowboy_req:peer(Req),
-	Url = cowboy_req:path(Req),	
 	State = #user{fields=setUserFields(#{}, [{ipaddr, u:ip2binary(IpAddress)},{role, <<"ordinar">>},{name, <<"Anonymous">>}])},
-	Ret = case access_test:test(IpAddress, Url) of
-		{ok, _} ->
-			State1 = schedule_ping(State, 30000),
-			{cowboy_websocket, Req, State1, #{idle_timeout => 30000*2}};
-		{error, _} ->
-			Req1 = cowboy_req:reply(403, #{}, <<"Too many connections.">>, Req),
-			{ok, Req1, undefined}
-	end,
-	Ret.
+	State1 = schedule_ping(State, 30000),
+	{cowboy_websocket, Req, State1, #{idle_timeout => 30000*2}}.
 
 websocket_handle({text, Msg}, State) ->
 	MssDec = jsone:try_decode(Msg, [{object_format, tuple},reject_invalid_utf8,{keys, atom}]),
@@ -336,18 +328,3 @@ setUserFields(Map, Data) when is_tuple(Data) ->
 	maps:put(Param, Value, Map);
 setUserFields(Map, Data) when is_list(Data) ->
 	lists:foldl(fun(Elem, Acc) -> setUserFields(Acc, Elem) end, Map, Data).
-% admaccess(Token, State) when State#user.status =:= "admin" ->
-% 	SavedToken = list_to_binary(State#user.token),
-% 	case SavedToken of
-% 		Token ->
-% 			{ok, State};
-% 		_ ->
-% 			Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, erroradminregister}])},
-% 			self() ! Dtsend,				
-% 			{error, State}
-% 	end;
-% admaccess(_Token, State) ->
-% 	Dtsend = {sreply, jsone:encode([{action, systemsay},{user, system},{message, erroradminregister}])},
-% 	self() ! Dtsend,				
-% 	{error, State}.
-			

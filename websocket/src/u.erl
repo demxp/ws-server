@@ -8,9 +8,9 @@
   traceB/1,
   traceB/2,
   md5_hex/1,
-  getSetting/1,
   utime/0,
   utime/1,
+  utime/2,
   apply_foo/2,
   ip2binary/1,
   ets_result/2,
@@ -48,25 +48,18 @@ index_of(_, [], _)  -> not_found;
 index_of(Item, [Item|_], Index) -> Index;
 index_of(Item, [_|Tl], Index) -> index_of(Item, Tl, Index+1).
 
-utime() ->
-  utime(asbinary).
-utime(asbinary)->
-  {MegaSecs, MilliSecs, _Microsecs} = erlang:timestamp(),
-  integer_to_binary(MegaSecs * 1000000 + MilliSecs);
-utime(asinteger)->
-  {MegaSecs, MilliSecs, _Microsecs} = erlang:timestamp(),
-  MegaSecs * 1000000 + MilliSecs.
-
-getSetting(Key) ->
-  D = file:consult("./sett.dat"),
-  case D of
-    {ok, DataL} -> 
-      {_, Val} = lists:keyfind(Key,1,DataL),
-      Val;
-    {error,_} -> 
-      u:trace(D),
-      {error}
-  end.
+utime() -> utime(asbinary, sc).
+utime(Bin) -> utime(Bin, sc).
+utime(Bin, sc) -> utime(Bin, 1000000);
+utime(Bin, mlsc) -> utime(Bin, 1000);
+utime(Bin, mcsc)-> utime(Bin, 1);
+utime(Bin, Div) when is_integer(Div) ->
+  {MegaSecs, Secs, Microsecs} = erlang:timestamp(),
+  Fun = case Bin of
+    asinteger -> fun(I) -> I end;
+    asbinary -> fun(I) -> integer_to_binary(I) end
+  end,
+  Fun(((MegaSecs * 1000000 + Secs) * 1000000 + Microsecs) div Div).
 
   % code:add_pathz("/app/websocket/deps/jsone/ebin").
   % {ok, Data} = file:read_file("./sett.dat").
