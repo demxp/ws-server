@@ -1,0 +1,76 @@
+/*Чекбокс - вынести в CSS*/
+/* switcher */
+.switcher{
+    display: block;
+    margin: 5px auto;
+    width: 50px;
+    height: 26px;
+}
+.switcher input {
+  position: absolute;
+  z-index: -1;
+  opacity: 0;
+  margin: 10px 0 0 20px;
+}
+.switcher__text {
+  position: relative;
+  padding: 0 0 0 60px;
+  cursor: pointer;
+}
+.switcher__text:before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 0;
+  width: 50px;
+  height: 26px;
+  border-radius: 13px;
+  background: #CDD1DA;
+  transition: .2s;
+}
+.switcher__text:after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 10px;
+  background: #FFF;
+  transition: .2s;
+}
+.switcher input:checked + .switcher__text:before {
+  background: #49d475;
+}
+.switcher input:checked + .switcher__text:after {
+  left: 26px;
+}
+
+/* end switcher */
+
+
+/* Стили строк таблиц для индикации ошибок/успеха */
+tr.tr__green td{
+    background-color: #9cff9c !important;
+    transition: .3s;
+}
+
+tr.tr__red td{
+    background-color: #ff9c9c !important;
+    transition: .3s;
+}
+
+div.top-block{
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+}
+
+div.top-block a.btn{
+  margin-top: 46px;
+  display: table;  
+}
+
+div.top-block .pagination{
+  margin-bottom: 0;
+}

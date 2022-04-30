@@ -36,17 +36,14 @@ websocket_info({room_closed}, State) ->
 	{[{text, Text}], NewState};
 websocket_info({cast_reply, Msg}, State) ->
 	{Text, State1} = case Msg of
-		{login, _Data} -> processTokenResponce(Msg, State);
-		{refresh, _Data} -> processTokenResponce(Msg, State);
-		{create_user, Data} -> 
-			{Status, Resp} = Data,
-			{jsone:encode(#{action => create_admin, status => Status, data => Resp}), State};
-		{remove_user, Data} -> 
-			{Status, Resp} = Data,
-			{jsone:encode(#{action => remove_admin, status => Status, data => Resp}), State};
-		{list_users, Data} -> 
-			{Status, Resp} = Data,
-			{jsone:encode(#{action => list_admins, status => Status, data => Resp}), State};			
+		% {login, _Data} -> processTokenResponce(Msg, State);
+		% {refresh, _Data} -> processTokenResponce(Msg, State);
+		{Mode, Data} -> 
+			Rpl = case Data of
+				{ok, Resp} -> #{action => Mode, status => ok, data => Resp};
+				{error, Error} -> #{action => Mode, error => Error}
+			end,
+			{jsone:encode(Rpl), State};
 		_ -> 
 			{Action, Data, Status} = Msg,
 			{jsone:encode(#{action => Action, status => Status, data => Data}), State}
@@ -64,15 +61,15 @@ websocket_info(_Info, State) ->
 websocket_terminate(_Reason, _Req, _State) ->
 	ok.
 
-processTokenResponce(Data, State) ->
-	case Data of
-		{Mode, {ok, Access, Refresh}} -> 
-			UpdatedUserFields = renewMapFromToken(maps:get(token,Access), State#user.fields),
-			ifRegistered(fun() -> room_router:set_user_vars(State#user.room_pid, State#user.servid, UpdatedUserFields) end, State),
-			{jsone:encode(#{action => Mode, status => ok, token => Access, refresh => Refresh}), State#user{fields = UpdatedUserFields}};
-		{Mode, {error, Err}} -> 
-			{jsone:encode(#{action => Mode, error => Err}), State}
-	end.
+% processTokenResponce(Data, State) ->
+% 	case Data of
+% 		{Mode, {ok, Access, Refresh}} -> 
+% 			UpdatedUserFields = renewMapFromToken(maps:get(token,Access), State#user.fields),
+% 			ifRegistered(fun() -> room_router:set_user_vars(State#user.room_pid, State#user.servid, UpdatedUserFields) end, State),
+% 			{jsone:encode(#{action => Mode, status => ok, token => Access, refresh => Refresh}), State#user{fields = UpdatedUserFields}};
+% 		{Mode, {error, Err}} -> 
+% 			{jsone:encode(#{action => Mode, error => Err}), State}
+% 	end.
 
 
 analize({Data}, State1) ->
@@ -122,6 +119,7 @@ analize({Data}, State1) ->
 				room_router:send(RPid, {Dtsend, State#user.servid}),
 				State;
 			"whisper" ->
+				% to = binary_split(<<"userid@room">>) - may be?
 				checkRoomRegistration(State),
 				Recipient = proplists:get_value(to, Data, <<"empty">>),
 				Dtsend = Reply([{num, State#user.servid},{message, proplists:get_value(message, Data)}]),
@@ -130,15 +128,15 @@ analize({Data}, State1) ->
 			"ping" ->
 				self() ! {sreply, jsone:encode([{action,ping}, {message, pong}])},
 				State;
-			"login" ->
-				Login = proplists:get_value(login, Data, <<"Anonymous">>),
-				Password = proplists:get_value(password, Data, <<"password">>),
-				user_token:login(self(), {Login, Password}),
-				State;
-			"refresh" ->
-				RefreshToken = proplists:get_value(refresh, Data, <<"badtoken">>),
-				user_token:refresh(self(), {RefreshToken}),
-				State;
+			% "login" ->
+			% 	Login = proplists:get_value(login, Data, <<"Anonymous">>),
+			% 	Password = proplists:get_value(password, Data, <<"password">>),
+			% 	user_token:login(self(), {Login, Password}),
+			% 	State;
+			% "refresh" ->
+			% 	RefreshToken = proplists:get_value(refresh, Data, <<"badtoken">>),
+			% 	user_token:refresh(self(), {RefreshToken}),
+			% 	State;
 			"operation" ->
 				checkRoomRegistration(State),
 				Fun = fun() ->
@@ -181,19 +179,29 @@ analize({Data}, State1) ->
 				RoomToCreate = proplists:get_value(room, Data, <<"000">>),
 				execOnly([<<"admin">>], fun() -> router_main:remove_room(RoomToCreate) end, CURole, ReplyNoUser),
 				State;
-			"list_admins" ->
+			"list_users" ->
 				execOnly([<<"admin">>], fun() -> user_token:list_users(self()) end, CURole),
 				State;
-			"create_admin" ->
+			"create_user" ->
 				Login = proplists:get_value(login, Data, <<"login">>),
 				Name = proplists:get_value(name, Data, <<"Anonymous">>),
 				Password = proplists:get_value(password, Data, <<"simple-password">>),
 				Role = proplists:get_value(role, Data, <<"ordinar">>),
 				execOnly([<<"admin">>], fun() -> user_token:create_user(self(), {Login, Name, Password, Role}) end, CURole),
 				State;
-			"remove_admin" ->
+			"update_user" ->
 				UserId = proplists:get_value(id, Data, <<"000">>),
-				execOnly([<<"admin">>], fun() -> user_token:remove_user(self(), UserId) end, CURole),
+				Login = proplists:get_value(login, Data, <<"login">>),
+				Name = proplists:get_value(name, Data, <<"Anonymous">>),
+				Password = proplists:get_value(password, Data, <<"simple-password">>),
+				Role = proplists:get_value(role, Data, <<"ordinar">>),
+				OldPassword = proplists:get_value(old_password, Data, <<"simple-password">>),
+				execOnly([<<"admin">>], fun() -> user_token:update_user(self(), {UserId, Login, Name, Password, Role, OldPassword}) end, CURole),
+				State;				
+			"remove_user" ->
+				UserId = proplists:get_value(id, Data, <<"000">>),
+				OldPassword = proplists:get_value(old_password, Data, <<"000">>),
+				execOnly([<<"admin">>], fun() -> user_token:remove_user(self(), {UserId, OldPassword}) end, CURole),
 				State;				
 			% "getroomsett" ->
 			% 	Token = proplists:get_value(<<"token">>, Data),

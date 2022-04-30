@@ -23,8 +23,10 @@ start(_Type, _Args) ->
 				{mimetypes, cow_mimetypes, all}
 			]}},			
 			{"/", cowboy_static, {priv_file, websocket, "www/hi.html"}},
-			{"/admininterface", cowboy_static, {priv_file, websocket, "www/index.html"}},
-			{"/websocket", ws_handler, []}
+			{"/admin", cowboy_static, {priv_file, websocket, "www/index.html"}},
+      {"/auth/:mode", auth_h, #{loginpage => "www/login.html", afterlogin => "/admin"}},
+			{"/websocket", ws_handler, #{}},
+      {'_', cowboy_static, {priv_file, websocket, "www/errors/404.html"}}
 		]}
 	]),
 	{ok, Port} = websocket_app:get_env(<<"server.port">>),

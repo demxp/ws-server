@@ -9,13 +9,14 @@
   check/1,
   parse/1,
   create_user/2,
+  update_user/2,
   remove_user/2,
   list_users/1
 ]).
 
 -define(SERVER, ?MODULE).
--record(state,{db=ets:new(?MODULE, [bag, {keypos, 1}]), save_timer, iswork = 0}).
--record(user,{login, name, password, role}).
+-record(state,{db=ets:new(?MODULE, [set, {keypos, 1}]), save_timer, iswork = 0}).
+-record(user,{login, name, password, role, main=false}).
 
 start_link() ->
   gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -35,8 +36,11 @@ refresh(Pid, {Token}) ->
 create_user(Pid, Params) ->
   gen_server:cast(?SERVER, {create, Params, Pid}).
 
-remove_user(Pid, Id) ->
-  gen_server:cast(?SERVER, {remove, Id, Pid}).
+update_user(Pid, Params) ->
+  gen_server:cast(?SERVER, {update, Params, Pid}).
+
+remove_user(Pid, Params) ->
+  gen_server:cast(?SERVER, {remove, Params, Pid}).
 
 list_users(Pid) ->
   gen_server:cast(?SERVER, {list, Pid}).
@@ -77,11 +81,54 @@ handle_cast({create, {Login, Name, Password, Role}, Pid}, #state{} = State) ->
   ets:insert(State#state.db, {userkey(UserId), NUser}),
   Pid ! {cast_reply, {create_user, {ok, #{id => UserId, login => Login, name => Name, role => Role}}}},
   {noreply, State};
-handle_cast({remove, Id, Pid}, #state{} = State) ->
-  ets:delete(State#state.db, userkey(Id)),
-  ets:delete(State#state.db, sesskey(Id)),
-  Pid ! {cast_reply, {remove_user, {ok, removed}}},
-  {noreply, State};
+handle_cast({update, {Id, Login, Name, Password, Role, OldPassword}, Pid}, #state{} = State) ->
+  User = ets:lookup(State#state.db, userkey(Id)),
+  try
+    Userdata1 = case User of
+      [] -> throw(notfound);
+      [{_, Userdata}] -> Userdata
+    end,
+    ComparePass = comparePassword(Userdata1#user.password, OldPassword),
+    if
+      Userdata1#user.main == true andalso ComparePass == false -> throw(badpassword);
+      true -> ok
+    end,
+    {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
+    NewPassHash = list_to_binary(u:sha256_hex(<<Salt/binary,Password/binary,Salt/binary>>)),
+    NUser = #user{login = Login, name = Name, password = NewPassHash, role = Role, main = Userdata1#user.main},
+    ets:insert(State#state.db, {userkey(Id), NUser}),
+    Pid ! {cast_reply, {update_user, {ok, #{id => Id, login => Login, name => Name, role => Role}}}},
+    {noreply, State}
+  catch
+    _:Error -> 
+    Pid ! {cast_reply, {update_user, {error, Error}}},
+    {noreply, State}
+  end;
+handle_cast({remove, {Id, OldPassword}, Pid}, #state{} = State) ->
+  User = ets:lookup(State#state.db, userkey(Id)),
+  try
+    Userdata1 = case User of
+      [] -> throw(notfound);
+      [{_, Userdata}] -> Userdata
+    end,
+    ComparePass = comparePassword(Userdata1#user.password, OldPassword),
+    if
+      Userdata1#user.main == true andalso ComparePass == false -> throw(badpassword);
+      true -> ok
+    end,
+    case Userdata1#user.main of
+      false -> ets:delete(State#state.db, userkey(Id));
+      true -> ok
+    end,
+    ets:delete(State#state.db, sesskey(Id)),
+
+    Pid ! {cast_reply, {remove_user, {ok, removed}}},
+    {noreply, State}
+  catch
+    _:Error -> 
+    Pid ! {cast_reply, {remove_user, {error, Error}}},
+    {noreply, State}
+  end;
 handle_cast({list, Pid}, #state{} = State) ->
   Users = ets:match_object(State#state.db, {'_', #user{_='_'}}),
   FormatUser = fun(Elem, Acc) ->
@@ -175,11 +222,11 @@ genTokens(UserId, State) ->
   {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
   {ok, ExpireAccess} = websocket_app:get_env(<<"admin.tokens.expire-access">>, 1800), %30 min default
   {ok, ExpireRefresh} = websocket_app:get_env(<<"admin.tokens.expire-refresh">>, 5184000),  %60 days default
-  [{Id, User}] = ets:lookup(State#state.db, userkey(UserId)),
+  [{_, User}] = ets:lookup(State#state.db, userkey(UserId)),
   RefreshToken = uuid:uuid_to_string(uuid:get_v4(), binary_standard),
   Refresh = #{expire => u:utime(asinteger) + ExpireRefresh, token => RefreshToken},
   Header = [{alg, <<"MD5">>}, {typ, <<"JWT">>}],
-  Payload = [{exp, u:utime(asinteger) + ExpireAccess}, {id, Id}, {login, User#user.login}, {name, User#user.name}, {role, User#user.role}],
+  Payload = [{exp, u:utime(asinteger) + ExpireAccess}, {id, UserId}, {login, User#user.login}, {name, User#user.name}, {role, User#user.role}],
   Data = base64:encode_to_string(jsone:encode(Header)) ++ "." ++ base64:encode_to_string(jsone:encode(Payload)),
   Hash = list_to_binary(u:md5_hex(Data ++ Salt)),
   BinData = list_to_binary(Data),
@@ -253,7 +300,7 @@ authFileOpen() ->
 createNewAuthFile() ->
   {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
   PassHash = list_to_binary(u:sha256_hex(<<Salt/binary,<<"admin-password">>/binary,Salt/binary>>)),
-  UserRecord = #{login => <<"admin">>, name => <<"Admin">>, password => PassHash, role => <<"admin">>},
+  UserRecord = #{login => <<"admin">>, name => <<"Admin">>, password => PassHash, role => <<"admin">>, main => true},
   UserId = uuid:uuid_to_string(uuid:get_v4(), binary_standard),
   Data = jsone:encode(#{userid => UserId, userdata => UserRecord, sessions => []}),
   Result = file:write_file(code:priv_dir(websocket) ++ "/auth.dat", Data),
@@ -271,6 +318,10 @@ schedule_save(State) ->
   {ok, IntervalSec} = websocket_app:get_env(<<"admin.login-server.save-interval">>),
   Ref = erlang:send_after(IntervalSec*1000, self(), do_save),
   State#state{save_timer=Ref}.
+
+comparePassword(ExistedPass, EnteredPass) ->
+  {ok, Salt} = websocket_app:get_env(<<"server.salt">>),
+  ExistedPass == list_to_binary(u:sha256_hex(<<Salt/binary,EnteredPass/binary,Salt/binary>>)).
 
 terminate(_Reason, State) ->
   updateFile(State),

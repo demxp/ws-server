@@ -4,3 +4,5 @@ websocket/_rel/
 websocket/deps/
 websocket/ebin/
 websocket/websocket.d
+websocket/node_modules
+websocket/package-lock.json
